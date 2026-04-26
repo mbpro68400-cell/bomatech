@@ -1,0 +1,69 @@
+/* Bomatech global styles.
+ *
+ * The design system is the source of truth:
+ * - tokens.css defines all colors, fonts, radii, shadows, density modes
+ * - app.css defines the component classes (.sidebar, .card, .btn, .kpi, etc.)
+ *
+ * We import them first, then apply minimal resets on top.
+ */
+
+@import "@bomatech/ui/tokens.css";
+@import "@bomatech/ui/app.css";
+
+/* Minimal reset on top of the design system */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fz-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+
+/* Range inputs — harmonise with the warm palette */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--warm-200);
+  border-radius: 4px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-elev);
+  box-shadow: var(--shadow-xs);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-elev);
+}

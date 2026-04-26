@@ -1,0 +1,12 @@
+{
+  "name": "@bomatech/ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bomatech shared design tokens and base CSS",
+  "main": "tokens.css",
+  "files": ["tokens.css", "app.css"],
+  "exports": {
+    "./tokens.css": "./tokens.css",
+    "./app.css": "./app.css"
+  }
+}

@@ -1,0 +1,77 @@
+# ==================== OS ====================
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# ==================== Editors ====================
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+
+# ==================== Env / secrets ====================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ==================== Node / Next.js ====================
+node_modules/
+.pnpm-store/
+.next/
+out/
+dist/
+build/
+.turbo/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+coverage/
+.swc/
+
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+.python-version
+.uv/
+
+# ==================== Supabase ====================
+supabase/.branches/
+supabase/.temp/
+supabase/.env
+**/supabase/.temp/
+supabase/config.toml.local
+
+# ==================== Logs / tmp ====================
+*.log
+logs/
+tmp/
+temp/
+*.bak
+
+# ==================== Artifacts ====================
+*.tar.gz
+*.zip
+uploads/
+storage/

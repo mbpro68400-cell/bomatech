@@ -1,0 +1,155 @@
+/* ============================================================
+   BOMATECH — Design tokens
+   ============================================================ */
+
+:root {
+  /* Fonts */
+  --font-sans: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  --font-serif: "Instrument Serif", "Times New Roman", serif;
+
+  /* Neutral scale — warm off-white */
+  --warm-50:  #fbfaf7;
+  --warm-100: #f5f3ee;
+  --warm-150: #ede9e1;
+  --warm-200: #e3ddd0;
+  --warm-300: #c9c2b2;
+  --warm-400: #9d9686;
+  --warm-500: #6d6758;
+  --warm-600: #4d483d;
+  --warm-700: #36332a;
+  --warm-800: #22201a;
+  --warm-900: #141310;
+
+  /* Accent — indigo/violet doux */
+  --accent: oklch(0.55 0.16 285);
+  --accent-soft: oklch(0.92 0.04 285);
+  --accent-fg: oklch(0.98 0.008 285);
+  --accent-ring: oklch(0.55 0.16 285 / 0.18);
+
+  /* Semantics */
+  --success: oklch(0.62 0.13 155);
+  --success-soft: oklch(0.94 0.05 155);
+  --warning: oklch(0.72 0.14 65);
+  --warning-soft: oklch(0.95 0.06 75);
+  --danger: oklch(0.58 0.18 25);
+  --danger-soft: oklch(0.94 0.04 25);
+
+  /* Surfaces (light) */
+  --bg: var(--warm-50);
+  --bg-elev: #ffffff;
+  --bg-sunken: var(--warm-100);
+  --border: oklch(0.88 0.01 75);
+  --border-strong: oklch(0.82 0.015 75);
+  --fg: var(--warm-900);
+  --fg-muted: var(--warm-500);
+  --fg-subtle: var(--warm-400);
+
+  /* Radii */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+
+  /* Shadows — soft */
+  --shadow-xs: 0 1px 0 oklch(0.2 0.01 75 / 0.04);
+  --shadow-sm: 0 1px 2px oklch(0.2 0.01 75 / 0.05), 0 1px 0 oklch(0.2 0.01 75 / 0.04);
+  --shadow-md: 0 2px 4px oklch(0.2 0.01 75 / 0.04), 0 4px 12px oklch(0.2 0.01 75 / 0.06);
+  --shadow-lg: 0 8px 24px oklch(0.2 0.01 75 / 0.08), 0 2px 4px oklch(0.2 0.01 75 / 0.04);
+
+  /* Density */
+  --row-h: 44px;
+  --control-h: 34px;
+  --pad-2: 8px;
+  --pad-3: 12px;
+  --pad-4: 16px;
+  --pad-5: 20px;
+  --pad-6: 24px;
+
+  /* Type */
+  --fz-xs: 11px;
+  --fz-sm: 12px;
+  --fz-md: 13px;
+  --fz-base: 14px;
+  --fz-lg: 16px;
+  --fz-xl: 20px;
+  --fz-2xl: 26px;
+  --fz-3xl: 34px;
+  --fz-4xl: 44px;
+  --fz-display: 56px;
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #0f0e0c;
+  --bg-elev: #18170f;
+  --bg-sunken: #0a0908;
+  --border: oklch(0.25 0.01 75);
+  --border-strong: oklch(0.32 0.01 75);
+  --fg: oklch(0.96 0.01 75);
+  --fg-muted: oklch(0.7 0.01 75);
+  --fg-subtle: oklch(0.52 0.01 75);
+
+  --accent: oklch(0.72 0.14 285);
+  --accent-soft: oklch(0.28 0.08 285);
+  --accent-fg: oklch(0.98 0.008 285);
+
+  --success: oklch(0.72 0.14 155);
+  --success-soft: oklch(0.28 0.08 155);
+  --warning: oklch(0.78 0.14 75);
+  --warning-soft: oklch(0.3 0.08 75);
+  --danger: oklch(0.68 0.18 25);
+  --danger-soft: oklch(0.3 0.1 25);
+
+  --shadow-xs: 0 1px 0 oklch(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.4);
+  --shadow-md: 0 2px 6px oklch(0 0 0 / 0.4), 0 6px 16px oklch(0 0 0 / 0.35);
+  --shadow-lg: 0 12px 32px oklch(0 0 0 / 0.5);
+
+  color-scheme: dark;
+}
+
+[data-density="compact"] {
+  --row-h: 36px;
+  --control-h: 30px;
+  --pad-3: 8px;
+  --pad-4: 12px;
+  --pad-5: 16px;
+  --pad-6: 20px;
+}
+
+/* Reset + base */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fz-base);
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01", "cv11";
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input, select, textarea { font: inherit; color: inherit; }
+a { color: inherit; text-decoration: none; }
+::selection { background: var(--accent-soft); color: var(--fg); }
+
+/* Tabular numerals for all money / metric text */
+.num, td.num, .kpi-value, .metric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Scrollbar — subtle */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 10px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--fg-subtle); }
