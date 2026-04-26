@@ -15,7 +15,7 @@ export default function LoginPage() {
     const supabase = getBrowserClient();
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: `${window.location.origin}/dashboard` },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/dashboard` },
     });
     setLoading(false);
     setStatus(error ? "error" : "sent");
