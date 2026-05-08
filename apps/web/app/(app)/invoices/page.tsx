@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle } from "lucide-react";
+import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle, FileText, Archive } from "lucide-react";
 import {
   bulkInsertInvoices,
   createInvoice,
@@ -9,10 +9,13 @@ import {
   effectiveStatus,
   listInvoices,
   updateInvoiceStatus,
+  type BulkInvoiceInput,
   type EffectiveStatus,
 } from "@/lib/queries/invoices";
 import { getCurrentCompanyId } from "@/lib/queries/transactions";
-import { parseInvoiceCsv, type ParseInvoiceResult } from "@/lib/csv/invoice-csv-parser";
+import { parseInvoiceCsv, type ParseInvoiceResult, type ParsedInvoiceRow } from "@/lib/csv/invoice-csv-parser";
+import { parseInvoicePdf, type ParseInvoicePdfResult } from "@/lib/pdf/invoice-pdf-parser";
+import { parseInvoiceZip, type ParseInvoiceZipResult } from "@/lib/zip/invoice-zip-parser";
 import type { Invoice } from "@/lib/engines/types";
 
 type Filter = "all" | "pending" | "overdue" | "paid";
@@ -111,6 +114,23 @@ export default function InvoicesPage() {
   const [importError, setImportError] = useState<string>("");
   const [importInserted, setImportInserted] = useState(0);
   const [importSkipped, setImportSkipped] = useState(0);
+
+  // PDF import state (single file)
+  const [showPdfImport, setShowPdfImport] = useState(false);
+  const [pdfStep, setPdfStep] = useState<"idle" | "parsing" | "ready" | "needs_review" | "saving" | "done" | "error">("idle");
+  const [pdfFilename, setPdfFilename] = useState("");
+  const [pdfResult, setPdfResult] = useState<ParseInvoicePdfResult | null>(null);
+  const [pdfError, setPdfError] = useState<string>("");
+
+  // ZIP batch import state
+  const [showZipImport, setShowZipImport] = useState(false);
+  const [zipStep, setZipStep] = useState<"idle" | "parsing" | "preview" | "uploading" | "done" | "error">("idle");
+  const [zipFilename, setZipFilename] = useState("");
+  const [zipResult, setZipResult] = useState<ParseInvoiceZipResult | null>(null);
+  const [zipProgress, setZipProgress] = useState<{ current: number; total: number; name: string } | null>(null);
+  const [zipError, setZipError] = useState<string>("");
+  const [zipInserted, setZipInserted] = useState(0);
+  const [zipSkippedDb, setZipSkippedDb] = useState(0);
 
   const today = todayIso();
 
@@ -259,6 +279,183 @@ export default function InvoicesPage() {
     setImportSkipped(0);
   }
 
+  // ---------- PDF unitaire ----------
+
+  async function handlePdfFile(file: File) {
+    setPdfFilename(file.name);
+    setPdfStep("parsing");
+    setPdfError("");
+    try {
+      const result = await parseInvoicePdf(file);
+      setPdfResult(result);
+      setPdfStep(result.isReady ? "ready" : "needs_review");
+    } catch (e) {
+      setPdfError(e instanceof Error ? e.message : String(e));
+      setPdfStep("error");
+    }
+  }
+
+  async function confirmPdfImport() {
+    if (!pdfResult || !companyId) return;
+    const inv = pdfResult.invoice;
+    if (
+      inv.amount_ht_cents == null ||
+      inv.amount_tva_cents == null ||
+      inv.amount_ttc_cents == null ||
+      !inv.number ||
+      !inv.client_name ||
+      !inv.issued_at ||
+      !inv.due_at
+    ) {
+      setPdfError("Champs manquants pour l'enregistrement.");
+      setPdfStep("error");
+      return;
+    }
+    setPdfStep("saving");
+    const { error } = await createInvoice({
+      company_id: companyId,
+      number: inv.number,
+      client_name: inv.client_name,
+      amount_ht_cents: inv.amount_ht_cents,
+      amount_tva_cents: inv.amount_tva_cents,
+      amount_ttc_cents: inv.amount_ttc_cents,
+      vat_rate: inv.vat_rate,
+      issued_at: inv.issued_at,
+      due_at: inv.due_at,
+      description: null,
+      source: "pdf_ocr",
+      source_file: pdfFilename,
+    });
+    if (error) {
+      setPdfError(/duplicate key|unique/i.test(error) ? `Numéro déjà utilisé : ${inv.number}` : error);
+      setPdfStep("error");
+      return;
+    }
+    setPdfStep("done");
+    await refresh(companyId);
+  }
+
+  function applyPdfToManualForm() {
+    if (!pdfResult) return;
+    const inv = pdfResult.invoice;
+    setForm({
+      number: inv.number ?? "",
+      client_name: inv.client_name ?? "",
+      amount_ht_input: inv.amount_ht_cents != null ? (inv.amount_ht_cents / 100).toString().replace(".", ",") : "",
+      vat_rate: inv.vat_rate ?? 0.2,
+      issued_at: inv.issued_at ?? todayIso(),
+      due_at: inv.due_at ?? plusDaysIso(30),
+      description: "",
+    });
+    resetPdfImport();
+    setShowForm(true);
+  }
+
+  function resetPdfImport() {
+    setShowPdfImport(false);
+    setPdfStep("idle");
+    setPdfFilename("");
+    setPdfResult(null);
+    setPdfError("");
+  }
+
+  // ---------- ZIP en lot ----------
+
+  async function handleZipFile(file: File) {
+    setZipFilename(file.name);
+    setZipStep("parsing");
+    setZipError("");
+    setZipProgress({ current: 0, total: 0, name: "" });
+    try {
+      const result = await parseInvoiceZip(file, (current, total, name) => {
+        setZipProgress({ current, total, name });
+      });
+      if (result.fatalError) {
+        setZipError(result.fatalError);
+        setZipStep("error");
+        return;
+      }
+      setZipResult(result);
+      setZipStep("preview");
+    } catch (e) {
+      setZipError(e instanceof Error ? e.message : String(e));
+      setZipStep("error");
+    } finally {
+      setZipProgress(null);
+    }
+  }
+
+  async function confirmZipImport() {
+    if (!zipResult || !companyId) return;
+    setZipStep("uploading");
+    // Aggregate all ready PDFs + all CSV rows into a single bulk insert
+    const bulk: BulkInvoiceInput[] = [];
+    for (const r of zipResult.results) {
+      if (r.kind === "pdf-ready") {
+        const inv = r.invoice;
+        if (
+          inv.number && inv.client_name && inv.issued_at && inv.due_at &&
+          inv.amount_ht_cents != null && inv.amount_tva_cents != null && inv.amount_ttc_cents != null
+        ) {
+          bulk.push({
+            number: inv.number,
+            client_name: inv.client_name,
+            amount_ht_cents: inv.amount_ht_cents,
+            amount_tva_cents: inv.amount_tva_cents,
+            amount_ttc_cents: inv.amount_ttc_cents,
+            vat_rate: inv.vat_rate,
+            issued_at: inv.issued_at,
+            due_at: inv.due_at,
+            description: null,
+          });
+        }
+      } else if (r.kind === "csv") {
+        for (const row of r.rows) {
+          bulk.push({
+            number: row.number,
+            client_name: row.client_name,
+            amount_ht_cents: row.amount_ht_cents,
+            amount_tva_cents: row.amount_tva_cents,
+            amount_ttc_cents: row.amount_ttc_cents,
+            vat_rate: row.vat_rate,
+            issued_at: row.issued_at,
+            due_at: row.due_at,
+            description: row.description,
+          });
+        }
+      }
+    }
+
+    if (bulk.length === 0) {
+      setZipStep("done");
+      setZipInserted(0);
+      setZipSkippedDb(0);
+      return;
+    }
+
+    const { inserted, skipped, errors } = await bulkInsertInvoices(companyId, bulk, "csv", zipFilename);
+    if (errors.length > 0) {
+      setZipError(`${errors.length} erreur(s) à l'insertion : ${errors[0]}`);
+      setZipStep("error");
+      return;
+    }
+    setZipInserted(inserted);
+    setZipSkippedDb(skipped);
+    setZipStep("done");
+    await refresh(companyId);
+  }
+
+  function resetZipImport() {
+    setShowZipImport(false);
+    setZipStep("idle");
+    setZipFilename("");
+    setZipResult(null);
+    setZipProgress(null);
+    setZipError("");
+    setZipInserted(0);
+    setZipSkippedDb(0);
+  }
+
   async function markPaid(invoice: Invoice) {
     if (!companyId) return;
     await updateInvoiceStatus(invoice.id, "paid");
@@ -314,9 +511,15 @@ export default function InvoicesPage() {
             {kpis.countOverdue > 0 ? ` · ${formatEur(kpis.totalOverdue)} en retard (${kpis.countOverdue})` : ""}
           </p>
         </div>
-        <div className="actions">
-          <button type="button" className="btn ghost sm" onClick={() => { resetImport(); setShowImport((v) => !v); }}>
-            <Upload size={14} strokeWidth={1.7} /> {showImport ? "Annuler import" : "Importer CSV"}
+        <div className="actions" style={{ flexWrap: "wrap", gap: 6 }}>
+          <button type="button" className="btn ghost sm" onClick={() => { resetImport(); resetPdfImport(); resetZipImport(); setShowImport((v) => !v); }}>
+            <Upload size={14} strokeWidth={1.7} /> CSV
+          </button>
+          <button type="button" className="btn ghost sm" onClick={() => { resetImport(); resetPdfImport(); resetZipImport(); setShowPdfImport((v) => !v); }}>
+            <FileText size={14} strokeWidth={1.7} /> PDF
+          </button>
+          <button type="button" className="btn ghost sm" onClick={() => { resetImport(); resetPdfImport(); resetZipImport(); setShowZipImport((v) => !v); }}>
+            <Archive size={14} strokeWidth={1.7} /> ZIP
           </button>
           <button type="button" className="btn primary sm" onClick={() => setShowForm((v) => !v)}>
             <Plus size={14} strokeWidth={2} /> {showForm ? "Annuler" : "Nouvelle facture"}
@@ -433,6 +636,190 @@ export default function InvoicesPage() {
                     <strong>Échec de l'import</strong>
                     <p className="muted" style={{ fontSize: 13, margin: "4px 0 12px" }}>{importError}</p>
                     <button type="button" className="btn ghost sm" onClick={resetImport}>Réessayer</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <style jsx>{`
+            .spin { animation: spin 1s linear infinite; }
+            @keyframes spin { to { transform: rotate(360deg); } }
+          `}</style>
+        </article>
+      )}
+
+      {showPdfImport && (
+        <article className="card" style={{ marginBottom: 16 }}>
+          <header className="card-head">
+            <div className="card-title">Import PDF unitaire</div>
+            <button type="button" className="btn ghost sm" onClick={resetPdfImport} style={{ marginLeft: "auto" }}>
+              <X size={14} strokeWidth={1.7} />
+            </button>
+          </header>
+          <div className="card-body" style={{ padding: 18 }}>
+            {pdfStep === "idle" && (
+              <SingleFileDropZone accept=".pdf,application/pdf" hint="Une facture PDF (texte sélectionnable, pas un scan)" onFile={handlePdfFile} />
+            )}
+            {pdfStep === "parsing" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 24 }}>
+                <Loader2 size={20} strokeWidth={1.7} className="spin" />
+                <span>Extraction de <strong>{pdfFilename}</strong>…</span>
+              </div>
+            )}
+            {(pdfStep === "ready" || pdfStep === "needs_review") && pdfResult && (
+              <div>
+                <p style={{ fontSize: 13, marginTop: 0 }}>
+                  Source : <strong>{pdfFilename}</strong>
+                  {pdfStep === "needs_review" && (
+                    <span className="tag" style={{ marginLeft: 8, color: "var(--warning)" }}>Vérification requise</span>
+                  )}
+                </p>
+                <table className="table" style={{ marginBottom: 12 }}>
+                  <tbody>
+                    {[
+                      ["N°", pdfResult.invoice.number],
+                      ["Client", pdfResult.invoice.client_name],
+                      ["Émise", pdfResult.invoice.issued_at],
+                      ["Échéance", pdfResult.invoice.due_at],
+                      ["HT", pdfResult.invoice.amount_ht_cents != null ? formatEur(pdfResult.invoice.amount_ht_cents) : null],
+                      ["TVA", pdfResult.invoice.amount_tva_cents != null ? formatEur(pdfResult.invoice.amount_tva_cents) : null],
+                      ["TTC", pdfResult.invoice.amount_ttc_cents != null ? formatEur(pdfResult.invoice.amount_ttc_cents) : null],
+                      ["Taux TVA", pdfResult.invoice.vat_rate != null ? `${(pdfResult.invoice.vat_rate * 100).toFixed(1)} %` : null],
+                    ].map(([k, v]) => (
+                      <tr key={k as string}>
+                        <td style={{ fontSize: 12, color: "var(--fg-muted)", width: 100 }}>{k}</td>
+                        <td>{v ?? <em className="muted">(non détecté)</em>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {pdfResult.warnings.length > 0 && (
+                  <div style={{ padding: 10, background: "var(--warning-soft)", borderRadius: 6, marginBottom: 12 }}>
+                    <strong style={{ fontSize: 13 }}>{pdfResult.warnings.length} avertissement(s)</strong>
+                    <ul style={{ margin: "6px 0 0 16px", fontSize: 12 }}>
+                      {pdfResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="btn ghost" onClick={resetPdfImport}>Annuler</button>
+                  {pdfStep === "needs_review" ? (
+                    <button type="button" className="btn primary" onClick={applyPdfToManualForm}>
+                      Corriger via formulaire
+                    </button>
+                  ) : (
+                    <button type="button" className="btn primary" onClick={confirmPdfImport}>
+                      Enregistrer la facture
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {pdfStep === "saving" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 24 }}>
+                <Loader2 size={20} strokeWidth={1.7} className="spin" />
+                <span>Enregistrement…</span>
+              </div>
+            )}
+            {pdfStep === "done" && (
+              <div style={{ padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                  <CheckCircle2 size={22} strokeWidth={1.7} color="var(--success)" />
+                  <h3 className="serif" style={{ margin: 0, fontSize: 18 }}>Facture importée</h3>
+                </div>
+                <p style={{ fontSize: 13, margin: "0 0 12px" }}>
+                  <strong>{pdfResult?.invoice.number}</strong> — <strong>{pdfResult?.invoice.client_name}</strong> — {pdfResult?.invoice.amount_ttc_cents != null ? formatEur(pdfResult.invoice.amount_ttc_cents) : ""}
+                </p>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="btn ghost" onClick={resetPdfImport}>Fermer</button>
+                </div>
+              </div>
+            )}
+            {pdfStep === "error" && (
+              <div style={{ padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  <AlertCircle size={20} strokeWidth={1.7} color="var(--danger)" />
+                  <div>
+                    <strong>Échec</strong>
+                    <p className="muted" style={{ fontSize: 13, margin: "4px 0 12px" }}>{pdfError}</p>
+                    <button type="button" className="btn ghost sm" onClick={resetPdfImport}>Réessayer</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <style jsx>{`
+            .spin { animation: spin 1s linear infinite; }
+            @keyframes spin { to { transform: rotate(360deg); } }
+          `}</style>
+        </article>
+      )}
+
+      {showZipImport && (
+        <article className="card" style={{ marginBottom: 16 }}>
+          <header className="card-head">
+            <div className="card-title">Import ZIP en lot</div>
+            <button type="button" className="btn ghost sm" onClick={resetZipImport} style={{ marginLeft: "auto" }}>
+              <X size={14} strokeWidth={1.7} />
+            </button>
+          </header>
+          <div className="card-body" style={{ padding: 18 }}>
+            {zipStep === "idle" && (
+              <SingleFileDropZone accept=".zip,application/zip" hint="Un ZIP contenant des PDF et/ou CSV de factures · max 50 Mo, 100 fichiers" onFile={handleZipFile} />
+            )}
+            {zipStep === "parsing" && (
+              <div style={{ padding: 18 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                  <Loader2 size={20} strokeWidth={1.7} className="spin" />
+                  <span>Traitement de <strong>{zipFilename}</strong>…</span>
+                </div>
+                {zipProgress && zipProgress.total > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 4 }}>
+                      {zipProgress.current} / {zipProgress.total} · {zipProgress.name}
+                    </div>
+                    <div style={{ height: 4, background: "var(--surface-sunken)", borderRadius: 2, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${(zipProgress.current / zipProgress.total) * 100}%`, background: "var(--accent)", transition: "width 0.2s" }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {zipStep === "preview" && zipResult && (
+              <ZipPreview result={zipResult} filename={zipFilename} onConfirm={confirmZipImport} onCancel={resetZipImport} />
+            )}
+            {zipStep === "uploading" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 24 }}>
+                <Loader2 size={20} strokeWidth={1.7} className="spin" />
+                <span>Enregistrement en lot…</span>
+              </div>
+            )}
+            {zipStep === "done" && (
+              <div style={{ padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                  <CheckCircle2 size={22} strokeWidth={1.7} color={zipInserted > 0 ? "var(--success)" : "var(--fg-muted)"} />
+                  <h3 className="serif" style={{ margin: 0, fontSize: 18 }}>
+                    {zipInserted > 0 ? "Lot importé" : "Rien à importer"}
+                  </h3>
+                </div>
+                <p style={{ fontSize: 13, margin: "0 0 12px" }}>
+                  <strong>{zipInserted}</strong> facture{zipInserted > 1 ? "s" : ""} importée{zipInserted > 1 ? "s" : ""}
+                  {zipSkippedDb > 0 ? ` · ${zipSkippedDb} doublon${zipSkippedDb > 1 ? "s" : ""} ignoré${zipSkippedDb > 1 ? "s" : ""}` : ""}
+                  {" depuis "}<strong>{zipFilename}</strong>.
+                </p>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="btn ghost" onClick={resetZipImport}>Fermer</button>
+                </div>
+              </div>
+            )}
+            {zipStep === "error" && (
+              <div style={{ padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  <AlertCircle size={20} strokeWidth={1.7} color="var(--danger)" />
+                  <div>
+                    <strong>Échec du traitement ZIP</strong>
+                    <p className="muted" style={{ fontSize: 13, margin: "4px 0 12px" }}>{zipError}</p>
+                    <button type="button" className="btn ghost sm" onClick={resetZipImport}>Réessayer</button>
                   </div>
                 </div>
               </div>
@@ -607,6 +994,121 @@ function Field({ label, children, full }: { label: string; children: React.React
       <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>{label}</span>
       {children}
     </label>
+  );
+}
+
+function SingleFileDropZone({ accept, hint, onFile }: { accept: string; hint: string; onFile: (f: File) => void }) {
+  const [isDragging, setIsDragging] = useState(false);
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) onFile(file);
+  }
+  function handleSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) onFile(file);
+  }
+  return (
+    <label
+      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={handleDrop}
+      style={{
+        display: "block",
+        padding: 32,
+        border: `2px dashed ${isDragging ? "var(--accent)" : "var(--border-strong)"}`,
+        borderRadius: "var(--r-md)",
+        textAlign: "center",
+        cursor: "pointer",
+        transition: "border-color 0.15s",
+        background: isDragging ? "var(--accent-soft)" : "transparent",
+      }}
+    >
+      <input type="file" accept={accept} onChange={handleSelect} style={{ display: "none" }} />
+      <Upload size={26} strokeWidth={1.5} style={{ color: "var(--fg-muted)", marginBottom: 10 }} />
+      <h4 className="serif" style={{ fontSize: 16, margin: "0 0 4px" }}>Dépose ton fichier</h4>
+      <p className="muted" style={{ fontSize: 12, margin: 0 }}>{hint}</p>
+    </label>
+  );
+}
+
+function ZipPreview({
+  result,
+  filename,
+  onConfirm,
+  onCancel,
+}: {
+  result: ParseInvoiceZipResult;
+  filename: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const ready = result.results.filter((r) => r.kind === "pdf-ready");
+  const review = result.results.filter((r) => r.kind === "pdf-needs-review");
+  const csv = result.results.filter((r) => r.kind === "csv");
+  const skipped = result.results.filter((r) => r.kind === "skipped");
+  const failed = result.results.filter((r) => r.kind === "failed");
+
+  const csvRowCount = csv.reduce((s, r) => s + ("rows" in r ? r.rows.length : 0), 0);
+  const willInsert = ready.length + csvRowCount;
+
+  return (
+    <div>
+      <p style={{ fontSize: 13, marginTop: 0 }}>
+        Source : <strong>{filename}</strong> · {result.totalEntries} fichier{result.totalEntries > 1 ? "s" : ""} dans le ZIP
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 16 }}>
+        <Tile label="PDF prêts" value={ready.length} tone="success" />
+        <Tile label="PDF à vérifier" value={review.length} tone="warning" />
+        <Tile label="Lignes CSV" value={csvRowCount} tone="info" />
+        <Tile label="Ignorés" value={skipped.length} tone="muted" />
+        <Tile label="Erreurs" value={failed.length} tone="danger" />
+      </div>
+
+      {(review.length > 0 || skipped.length > 0 || failed.length > 0) && (
+        <details style={{ fontSize: 12, marginBottom: 12 }}>
+          <summary>Détail des fichiers non automatiquement importables</summary>
+          <ul style={{ margin: "8px 0 0 16px" }}>
+            {review.map((r, i) => "filename" in r && (
+              <li key={`r-${i}`}><strong>{r.filename}</strong> — à vérifier ({"warnings" in r ? r.warnings.length : 0} avertissement(s))</li>
+            ))}
+            {skipped.map((r, i) => "filename" in r && (
+              <li key={`s-${i}`}><strong>{r.filename}</strong> — ignoré : {"reason" in r ? r.reason : ""}</li>
+            ))}
+            {failed.map((r, i) => "filename" in r && (
+              <li key={`f-${i}`}><strong>{r.filename}</strong> — erreur : {"reason" in r ? r.reason : ""}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button type="button" className="btn ghost" onClick={onCancel}>Annuler</button>
+        <button type="button" className="btn primary" onClick={onConfirm} disabled={willInsert === 0}>
+          Importer {willInsert} facture{willInsert > 1 ? "s" : ""}
+        </button>
+      </div>
+      <p className="muted" style={{ fontSize: 11, margin: "8px 0 0", textAlign: "right" }}>
+        Les PDF à vérifier ne sont pas importés automatiquement. Reprends-les un par un via « Importer PDF » après le lot.
+      </p>
+    </div>
+  );
+}
+
+function Tile({ label, value, tone }: { label: string; value: number; tone: string }) {
+  const colorMap: Record<string, string> = {
+    success: "var(--success)",
+    warning: "var(--warning)",
+    info: "var(--accent)",
+    muted: "var(--fg-muted)",
+    danger: "var(--danger)",
+  };
+  return (
+    <div style={{ padding: 10, background: "var(--surface-sunken)", borderRadius: 6, textAlign: "center" }}>
+      <div style={{ fontSize: 22, fontWeight: 500, color: colorMap[tone] ?? "var(--fg)" }}>{value}</div>
+      <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>{label}</div>
+    </div>
   );
 }
 
