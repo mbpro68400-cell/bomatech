@@ -55,17 +55,28 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
   const errors: { line: number; message: string }[] = [];
   let columnFrontier: number | null = null;
 
+  console.log(`[parseCicPdf] numPages=${pdf.numPages}`);
+
   for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const tc = await page.getTextContent();
-    const items: PdfItem[] = [];
-    for (const item of tc.items as { str: string; transform?: number[]; width?: number }[]) {
-      if (!item.str || !item.str.trim()) continue;
-      const tr = item.transform ?? [1, 0, 0, 1, 0, 0];
-      items.push({ text: item.str, x: tr[4], y: tr[5], width: item.width ?? 0 });
+    let items: PdfItem[];
+    try {
+      const page = await pdf.getPage(p);
+      const tc = await page.getTextContent();
+      items = [];
+      for (const item of tc.items as { str: string; transform?: number[]; width?: number }[]) {
+        if (!item.str || !item.str.trim()) continue;
+        const tr = item.transform ?? [1, 0, 0, 1, 0, 0];
+        items.push({ text: item.str, x: tr[4], y: tr[5], width: item.width ?? 0 });
+      }
+    } catch (e) {
+      const msg = `Page ${p} : ${e instanceof Error ? e.message : String(e)}`;
+      console.error(`[parseCicPdf] ${msg}`);
+      errors.push({ line: 0, message: msg });
+      continue;
     }
 
     const lines = groupIntoLines(items);
+    console.log(`[parseCicPdf] page ${p}: ${items.length} items, ${lines.length} lines`);
 
     // Calibrate the débit/crédit frontier from the table header on this page (or first page seen)
     if (columnFrontier === null) {
@@ -156,6 +167,7 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
       allRows.push(toRow(currentTx));
       currentTx = null;
     }
+    console.log(`[parseCicPdf] page ${p}: cumulative rows = ${allRows.length}`);
   }
 
   if (allRows.length === 0 && errors.length === 0) {
