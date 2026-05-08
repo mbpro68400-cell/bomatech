@@ -20,6 +20,7 @@ export default function ImportsPage() {
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [insertedCount, setInsertedCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
 
   async function handleFile(file: File) {
     setFilename(file.name);
@@ -78,7 +79,7 @@ export default function ImportsPage() {
       companyId,
       fileKind === "pdf" ? "ocr_pdf" : "csv",
     );
-    const { inserted, errors } = await insertTransactions(transactions);
+    const { inserted, skipped, errors } = await insertTransactions(transactions);
 
     if (errors.length > 0) {
       setErrorMessage(`${errors.length} erreur(s) à l'import : ${errors[0]}`);
@@ -87,6 +88,7 @@ export default function ImportsPage() {
     }
 
     setInsertedCount(inserted);
+    setSkippedCount(skipped);
     setStep("done");
   }
 
@@ -96,6 +98,7 @@ export default function ImportsPage() {
     setErrorMessage("");
     setFilename("");
     setInsertedCount(0);
+    setSkippedCount(0);
   }
 
   return (
@@ -139,17 +142,23 @@ export default function ImportsPage() {
       )}
 
       {step === "done" && (
-        <article className="card" style={{ borderColor: "var(--success)" }}>
+        <article className="card" style={{ borderColor: insertedCount > 0 ? "var(--success)" : "var(--border-strong)" }}>
           <div className="card-body" style={{ padding: 32 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-              <CheckCircle2 size={24} strokeWidth={1.7} color="var(--success)" />
+              <CheckCircle2 size={24} strokeWidth={1.7} color={insertedCount > 0 ? "var(--success)" : "var(--fg-muted)"} />
               <h2 className="serif" style={{ fontSize: 22, margin: 0, letterSpacing: "-0.02em" }}>
-                Import réussi
+                {insertedCount > 0 ? "Import réussi" : "Rien à importer"}
               </h2>
             </div>
             <p style={{ margin: "0 0 20px", fontSize: 14 }}>
-              <strong>{insertedCount}</strong> transaction(s) importée(s) depuis <strong>{filename}</strong>.
-              Tu peux maintenant aller voir ton tableau de bord.
+              <strong>{insertedCount}</strong> transaction{insertedCount > 1 ? "s" : ""} importée{insertedCount > 1 ? "s" : ""} depuis <strong>{filename}</strong>
+              {skippedCount > 0 ? (
+                <>
+                  . <strong>{skippedCount}</strong> doublon{skippedCount > 1 ? "s" : ""} ignoré{skippedCount > 1 ? "s" : ""} (déjà présent{skippedCount > 1 ? "s" : ""} en base).
+                </>
+              ) : (
+                <>. Tu peux maintenant aller voir ton tableau de bord.</>
+              )}
             </p>
             <div style={{ display: "flex", gap: 8 }}>
               <a href="/dashboard" className="btn primary sm" style={{ textDecoration: "none" }}>

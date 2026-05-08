@@ -46,32 +46,64 @@ export async function listTransactions(
 
 export async function insertTransactions(
   rows: Omit<Transaction, "id">[],
-): Promise<{ inserted: number; errors: string[] }> {
-  if (rows.length === 0) return { inserted: 0, errors: [] };
+): Promise<{ inserted: number; skipped: number; errors: string[] }> {
+  if (rows.length === 0) return { inserted: 0, skipped: 0, errors: [] };
 
   const supabase = getBrowserClient();
   const errors: string[] = [];
 
-  // Insert in batches of 100 to avoid payload limits
-  const batchSize = 100;
-  let inserted = 0;
+  // Dedup: a row is a duplicate if (company_id, source_ref) already exists.
+  // source_ref is set by rowsToTransactions: real CIC ref (VGxxxx, RUM:, …) for
+  // transfers/SEPA, otherwise a synthetic hash of date+amount+label — both
+  // stable across re-imports of the same statement.
+  const companyId = rows[0].company_id;
+  const incomingRefs = rows
+    .map((r) => r.source_ref)
+    .filter((x): x is string => typeof x === "string" && x.length > 0);
+
+  let existing = new Set<string>();
+  if (incomingRefs.length > 0) {
+    // Chunk the .in() query to avoid URL length issues on large imports.
+    const chunkSize = 200;
+    for (let i = 0; i < incomingRefs.length; i += chunkSize) {
+      const chunk = incomingRefs.slice(i, i + chunkSize);
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("source_ref")
+        .eq("company_id", companyId)
+        .in("source_ref", chunk);
+      if (error) {
+        errors.push(`Dedup check failed: ${error.message}`);
+        continue;
+      }
+      for (const row of data ?? []) {
+        if (row.source_ref) existing.add(row.source_ref);
+      }
+    }
+  }
+
+  const toInsert = rows.filter((r) => !r.source_ref || !existing.has(r.source_ref));
+  const skipped = rows.length - toInsert.length;
+
+  if (toInsert.length === 0) return { inserted: 0, skipped, errors };
 
   // Stamp each row with a sequential created_at so the source order
   // (PDF/CSV row order) is preserved when listing same-date rows.
   // Postgres `default now()` evaluates once per statement so without this
   // all rows in a batch would share the exact same created_at.
   const baseMs = Date.now();
-  const stamped = rows.map((r, i) => ({
+  const stamped = toInsert.map((r, i) => ({
     ...r,
     created_at: new Date(baseMs + i).toISOString(),
   })) as (Omit<Transaction, "id"> & { created_at: string })[];
 
+  const batchSize = 100;
+  let inserted = 0;
   for (let i = 0; i < stamped.length; i += batchSize) {
     const batch = stamped.slice(i, i + batchSize);
     const { error, count } = await supabase
       .from("transactions")
       .insert(batch, { count: "exact" });
-
     if (error) {
       errors.push(`Batch ${i}-${i + batch.length}: ${error.message}`);
     } else {
@@ -79,7 +111,7 @@ export async function insertTransactions(
     }
   }
 
-  return { inserted, errors };
+  return { inserted, skipped, errors };
 }
 
 export async function getLatestState(companyId: string): Promise<FinancialState | null> {
