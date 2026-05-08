@@ -11,7 +11,8 @@
  * Stratégie : on récupère les items texte avec coordonnées via unpdf
  * (wrapper pdfjs-dist), on les regroupe en lignes par bande Y, on détecte
  * le header pour calibrer la frontière débit/crédit, puis on agrège les
- * lignes en transactions.
+ * lignes en transactions. Les références CIC purement techniques (VGxxxx,
+ * mandats SEPA, RUM, ICS) sont sorties du libellé et routées vers source_ref.
  */
 
 import { getDocumentProxy } from "unpdf";
@@ -25,18 +26,35 @@ interface PdfItem {
   width: number;
 }
 
-const AMOUNT_RE = /^-?\d{1,3}(?:[. \s]\d{3})*,\d{2}$/;
+const AMOUNT_RE = /^-?\d{1,3}(?:[. \s]\d{3})*,\d{2}$/;
 const DATE_RE = /^\d{2}\/\d{2}\/\d{4}$/;
 
 // Continuations that are page-level chrome (footer/header/disclaimer), not transaction detail.
 const NOISE_RE =
   /^(solde\b|total\b|sous r[ée]serve|page \d+|r[ée]f\s*:|qxban\b|iban\b|information sur|\(g[ed]\)|gh\.\d|attention,|alerte\s*:|vous disposez|date valeur\b|date\s+date valeur|c\/c contrat|releve et informations|votre conseiller|cic\b|bomatech\b|banque cic|adresse postale|m[ée]diateur du cic|pour les op[ée]rations|pour toute demande|www\.|<<\s*suite)/i;
 
-const DATE_COL_MAX_X = 95; // dates start before this X (date opération is around 52)
-const LABEL_MIN_X = 140; // labels start around 148
-const AMOUNT_MIN_X = 380; // amount items appear well past the label area
+// Patterns for opaque internal references that pollute labels and belong in source_ref.
+const TECH_REF_PATTERNS: RegExp[] = [
+  /^VG[\dA-Z]{6,}$/, // CIC instant transfer ref, e.g. VG40924FLMT58B01
+  /^FR\d{2}[A-Z\d]{4,}(?:-\d+){1,3}$/, // SEPA mandate id with hyphen segments
+  /^[A-Z0-9]{20,}$/, // long opaque alphanumeric (e.g. SIMVSCLI5POL01802919500070407193379)
+];
+const RUM_RE = /^RUM\s*:\s*(\S+)/i;
+const ICS_RE = /^ICS\s*:\s*(\S+)/i;
+const PRLV_REF_RE = /^PRLV-[\w-]+$/;
 
-const Y_TOLERANCE = 2; // pts
+const DATE_COL_MAX_X = 95;
+const LABEL_MIN_X = 140;
+const AMOUNT_MIN_X = 380;
+
+const Y_TOLERANCE = 2;
+
+interface TxAccum {
+  date: string;
+  label: string[];
+  refs: string[];
+  amountCents: number;
+}
 
 export async function parseCicPdf(file: File): Promise<ParseResult> {
   const buffer = await file.arrayBuffer();
@@ -55,8 +73,6 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
   const errors: { line: number; message: string }[] = [];
   let columnFrontier: number | null = null;
 
-  console.log(`[parseCicPdf] numPages=${pdf.numPages}`);
-
   for (let p = 1; p <= pdf.numPages; p++) {
     let items: PdfItem[];
     try {
@@ -69,30 +85,25 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
         items.push({ text: item.str, x: tr[4], y: tr[5], width: item.width ?? 0 });
       }
     } catch (e) {
-      const msg = `Page ${p} : ${e instanceof Error ? e.message : String(e)}`;
-      console.error(`[parseCicPdf] ${msg}`);
-      errors.push({ line: 0, message: msg });
+      errors.push({ line: 0, message: `Page ${p} : ${e instanceof Error ? e.message : String(e)}` });
       continue;
     }
 
     const lines = groupIntoLines(items);
-    console.log(`[parseCicPdf] page ${p}: ${items.length} items, ${lines.length} lines`);
 
-    // Calibrate the débit/crédit frontier from the table header on this page (or first page seen)
+    // Calibrate the débit/crédit frontier from the table header on this page (first page seen).
     if (columnFrontier === null) {
       for (const line of lines) {
         const debitItem = line.find((it) => /^d[ée]bit\b/i.test(it.text));
         const creditItem = line.find((it) => /^cr[ée]dit\b/i.test(it.text));
         if (debitItem && creditItem) {
-          // Frontier = midpoint between end of débit text and start of crédit text
           columnFrontier = (debitItem.x + debitItem.width + creditItem.x) / 2;
           break;
         }
       }
     }
 
-    // Process lines into transactions
-    let currentTx: { date: string; label: string[]; amountCents: number; raw: PdfItem[] } | null = null;
+    let currentTx: TxAccum | null = null;
 
     for (const line of lines) {
       const dateItem = line.find((it) => it.x < DATE_COL_MAX_X && DATE_RE.test(it.text));
@@ -100,7 +111,6 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
       const amountItems = line.filter((it) => it.x >= AMOUNT_MIN_X && AMOUNT_RE.test(it.text));
 
       if (dateItem) {
-        // Flush previous transaction
         if (currentTx) {
           allRows.push(toRow(currentTx));
           currentTx = null;
@@ -113,17 +123,12 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
           .replace(/\s+/g, " ")
           .trim();
 
-        // Skip non-transaction rows (opening balance, etc.)
         if (!labelText || /^solde\b/i.test(labelText) || /^total\b/i.test(labelText)) {
           continue;
         }
 
-        if (amountItems.length === 0) {
-          // No amount on this dated line — skip rather than emit a half-row
-          continue;
-        }
+        if (amountItems.length === 0) continue;
 
-        // Take rightmost amount in case there are multiple (e.g., USD line)
         const amountItem = amountItems.sort((a, b) => b.x - a.x)[0];
         const isoDate = parseFrenchDate(dateItem.text);
         if (!isoDate) {
@@ -131,7 +136,7 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
           continue;
         }
 
-        const frontier = columnFrontier ?? (AMOUNT_MIN_X + 90); // fallback ≈ 470
+        const frontier = columnFrontier ?? AMOUNT_MIN_X + 90;
         const isCredit = amountItem.x >= frontier;
         let absCents: number;
         try {
@@ -142,10 +147,8 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
         }
         const signed = isCredit ? absCents : -absCents;
 
-        currentTx = { date: isoDate, label: [labelText], amountCents: signed, raw: line };
+        currentTx = { date: isoDate, label: [labelText], refs: [], amountCents: signed };
       } else if (currentTx && labelItems.length > 0) {
-        // Continuation line — append to current transaction's label, unless it's
-        // page chrome (footer / repeated header / disclaimers).
         const continuation = labelItems
           .sort((a, b) => a.x - b.x)
           .map((it) => it.text.trim())
@@ -153,21 +156,24 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
           .replace(/\s+/g, " ")
           .trim();
         if (!continuation || NOISE_RE.test(continuation)) {
-          // End of the transaction block on this page; do not pollute the label.
           allRows.push(toRow(currentTx));
           currentTx = null;
           continue;
         }
-        currentTx.label.push(continuation);
+
+        const ref = extractTechRef(continuation);
+        if (ref) {
+          currentTx.refs.push(ref);
+        } else {
+          currentTx.label.push(continuation);
+        }
       }
     }
 
-    // Flush last transaction at end of page
     if (currentTx) {
       allRows.push(toRow(currentTx));
       currentTx = null;
     }
-    console.log(`[parseCicPdf] page ${p}: cumulative rows = ${allRows.length}`);
   }
 
   if (allRows.length === 0 && errors.length === 0) {
@@ -178,6 +184,20 @@ export async function parseCicPdf(file: File): Promise<ParseResult> {
   }
 
   return { rows: allRows, errors, detectedFormat: "single-amount" };
+}
+
+function extractTechRef(text: string): string | null {
+  // Single-token patterns
+  for (const re of TECH_REF_PATTERNS) {
+    if (re.test(text)) return text;
+  }
+  if (PRLV_REF_RE.test(text)) return text;
+  // Key-value patterns
+  const rum = text.match(RUM_RE);
+  if (rum) return `RUM:${rum[1]}`;
+  const ics = text.match(ICS_RE);
+  if (ics) return `ICS:${ics[1]}`;
+  return null;
 }
 
 function groupIntoLines(items: PdfItem[]): PdfItem[][] {
@@ -195,12 +215,19 @@ function groupIntoLines(items: PdfItem[]): PdfItem[][] {
   return lines;
 }
 
-function toRow(tx: { date: string; label: string[]; amountCents: number; raw: PdfItem[] }): ParsedRow {
+function toRow(tx: TxAccum): ParsedRow {
   const fullLabel = tx.label.join(" — ").replace(/\s+/g, " ").trim();
+  // Prefer the first technical ref (typically VGxxxx for transfers, or RUM for SEPA).
+  const sourceRef = tx.refs[0];
   return {
     date: tx.date,
     amount_cents: tx.amountCents,
     label: fullLabel,
-    raw: { source: "pdf-cic", lines: String(tx.label.length) },
+    raw: {
+      source: "pdf-cic",
+      lines: String(tx.label.length),
+      ...(tx.refs.length > 1 ? { extra_refs: tx.refs.slice(1).join(",") } : {}),
+    },
+    ...(sourceRef ? { source_ref: sourceRef } : {}),
   };
 }

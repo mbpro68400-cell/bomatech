@@ -20,6 +20,7 @@ export interface ParsedRow {
   amount_cents: number; // signed
   label: string;
   raw: Record<string, string>;
+  source_ref?: string; // optional explicit ref (e.g., CIC VGxxxx for transfers, RUM for SEPA). Falls back to a synthetic hash if absent.
 }
 
 export interface ParseResult {
@@ -141,7 +142,7 @@ export function rowsToTransactions(
     counterparty: extractCounterparty(r.label),
     label: r.label,
     source,
-    source_ref: hashRow(r),
+    source_ref: r.source_ref ?? hashRow(r),
     reconciled: false,
   }));
 }
