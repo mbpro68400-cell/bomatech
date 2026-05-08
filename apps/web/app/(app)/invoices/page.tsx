@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2, Inbox, Plus, X, AlertCircle } from "lucide-react";
+import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle } from "lucide-react";
 import {
+  bulkInsertInvoices,
   createInvoice,
   deleteInvoice,
   effectiveStatus,
@@ -11,6 +12,7 @@ import {
   type EffectiveStatus,
 } from "@/lib/queries/invoices";
 import { getCurrentCompanyId } from "@/lib/queries/transactions";
+import { parseInvoiceCsv, type ParseInvoiceResult } from "@/lib/csv/invoice-csv-parser";
 import type { Invoice } from "@/lib/engines/types";
 
 type Filter = "all" | "pending" | "overdue" | "paid";
@@ -100,6 +102,15 @@ export default function InvoicesPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string>("");
   const [form, setForm] = useState<FormState>(emptyForm());
+
+  // CSV import state
+  const [showImport, setShowImport] = useState(false);
+  const [importStep, setImportStep] = useState<"idle" | "parsing" | "preview" | "uploading" | "done" | "error">("idle");
+  const [importFilename, setImportFilename] = useState("");
+  const [importParseResult, setImportParseResult] = useState<ParseInvoiceResult | null>(null);
+  const [importError, setImportError] = useState<string>("");
+  const [importInserted, setImportInserted] = useState(0);
+  const [importSkipped, setImportSkipped] = useState(0);
 
   const today = todayIso();
 
@@ -191,6 +202,63 @@ export default function InvoicesPage() {
     await refresh(companyId);
   }
 
+  async function handleCsvFile(file: File) {
+    setImportFilename(file.name);
+    setImportStep("parsing");
+    setImportError("");
+    try {
+      let text: string;
+      try {
+        text = await file.text();
+        if (text.includes("�")) throw new Error("UTF-8 invalide");
+      } catch {
+        const buffer = await file.arrayBuffer();
+        text = new TextDecoder("windows-1252").decode(buffer);
+      }
+      const result = parseInvoiceCsv(text);
+      if (result.rows.length === 0) {
+        setImportError(result.errors[0]?.message ?? "Aucune ligne reconnue.");
+        setImportStep("error");
+        return;
+      }
+      setImportParseResult(result);
+      setImportStep("preview");
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+      setImportStep("error");
+    }
+  }
+
+  async function confirmImport() {
+    if (!importParseResult || !companyId) return;
+    setImportStep("uploading");
+    const { inserted, skipped, errors } = await bulkInsertInvoices(
+      companyId,
+      importParseResult.rows,
+      "csv",
+      importFilename,
+    );
+    if (errors.length > 0) {
+      setImportError(`${errors.length} erreur(s) à l'import : ${errors[0]}`);
+      setImportStep("error");
+      return;
+    }
+    setImportInserted(inserted);
+    setImportSkipped(skipped);
+    setImportStep("done");
+    await refresh(companyId);
+  }
+
+  function resetImport() {
+    setShowImport(false);
+    setImportStep("idle");
+    setImportFilename("");
+    setImportParseResult(null);
+    setImportError("");
+    setImportInserted(0);
+    setImportSkipped(0);
+  }
+
   async function markPaid(invoice: Invoice) {
     if (!companyId) return;
     await updateInvoiceStatus(invoice.id, "paid");
@@ -247,11 +315,135 @@ export default function InvoicesPage() {
           </p>
         </div>
         <div className="actions">
+          <button type="button" className="btn ghost sm" onClick={() => { resetImport(); setShowImport((v) => !v); }}>
+            <Upload size={14} strokeWidth={1.7} /> {showImport ? "Annuler import" : "Importer CSV"}
+          </button>
           <button type="button" className="btn primary sm" onClick={() => setShowForm((v) => !v)}>
             <Plus size={14} strokeWidth={2} /> {showForm ? "Annuler" : "Nouvelle facture"}
           </button>
         </div>
       </header>
+
+      {showImport && (
+        <article className="card" style={{ marginBottom: 16 }}>
+          <header className="card-head">
+            <div className="card-title">Import CSV</div>
+            <button type="button" className="btn ghost sm" onClick={resetImport} style={{ marginLeft: "auto" }}>
+              <X size={14} strokeWidth={1.7} />
+            </button>
+          </header>
+          <div className="card-body" style={{ padding: 18 }}>
+            {importStep === "idle" && <InvoiceCsvDropZone onFile={handleCsvFile} />}
+
+            {importStep === "parsing" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 24 }}>
+                <Loader2 size={20} strokeWidth={1.7} className="spin" />
+                <span>Analyse de <strong>{importFilename}</strong>…</span>
+              </div>
+            )}
+
+            {importStep === "preview" && importParseResult && (
+              <div>
+                <p style={{ fontSize: 13, marginTop: 0 }}>
+                  <strong>{importParseResult.rows.length}</strong> facture{importParseResult.rows.length > 1 ? "s" : ""} reconnue{importParseResult.rows.length > 1 ? "s" : ""} dans <strong>{importFilename}</strong>
+                  {importParseResult.errors.length > 0 ? ` · ${importParseResult.errors.length} ligne(s) ignorée(s)` : ""}
+                </p>
+                {Object.keys(importParseResult.detectedColumns).length > 0 && (
+                  <p className="muted" style={{ fontSize: 12, margin: "0 0 12px" }}>
+                    Colonnes détectées : {Object.entries(importParseResult.detectedColumns).map(([k, v]) => `${k}=${v}`).join(" · ")}
+                  </p>
+                )}
+                <table className="table" style={{ marginBottom: 12 }}>
+                  <thead>
+                    <tr>
+                      <th>N°</th>
+                      <th>Client</th>
+                      <th>Émise</th>
+                      <th>Échéance</th>
+                      <th className="num">TTC</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importParseResult.rows.slice(0, 10).map((r, i) => (
+                      <tr key={i}>
+                        <td className="mono">{r.number}</td>
+                        <td>{r.client_name}</td>
+                        <td className="mono muted">{formatDate(r.issued_at)}</td>
+                        <td className="mono muted">{formatDate(r.due_at)}</td>
+                        <td className="num mono">{formatEur(r.amount_ttc_cents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {importParseResult.rows.length > 10 && (
+                  <p className="muted" style={{ fontSize: 12, margin: "0 0 12px" }}>
+                    … et {importParseResult.rows.length - 10} autres lignes.
+                  </p>
+                )}
+                {importParseResult.errors.length > 0 && (
+                  <details style={{ marginBottom: 12, fontSize: 12 }}>
+                    <summary>{importParseResult.errors.length} erreur(s) à l'analyse</summary>
+                    <ul style={{ margin: "8px 0 0 16px" }}>
+                      {importParseResult.errors.slice(0, 20).map((e, i) => (
+                        <li key={i}>Ligne {e.line} : {e.message}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="btn ghost" onClick={resetImport}>Annuler</button>
+                  <button type="button" className="btn primary" onClick={confirmImport}>
+                    Importer {importParseResult.rows.length} facture{importParseResult.rows.length > 1 ? "s" : ""}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {importStep === "uploading" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 24 }}>
+                <Loader2 size={20} strokeWidth={1.7} className="spin" />
+                <span>Enregistrement dans Supabase…</span>
+              </div>
+            )}
+
+            {importStep === "done" && (
+              <div style={{ padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                  <CheckCircle2 size={22} strokeWidth={1.7} color={importInserted > 0 ? "var(--success)" : "var(--fg-muted)"} />
+                  <h3 className="serif" style={{ margin: 0, fontSize: 18 }}>
+                    {importInserted > 0 ? "Import terminé" : "Rien à importer"}
+                  </h3>
+                </div>
+                <p style={{ fontSize: 13, margin: "0 0 12px" }}>
+                  <strong>{importInserted}</strong> facture{importInserted > 1 ? "s" : ""} importée{importInserted > 1 ? "s" : ""}
+                  {importSkipped > 0 ? ` · ${importSkipped} doublon${importSkipped > 1 ? "s" : ""} ignoré${importSkipped > 1 ? "s" : ""}` : ""}
+                  {" depuis "}<strong>{importFilename}</strong>.
+                </p>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="btn ghost" onClick={resetImport}>Fermer</button>
+                </div>
+              </div>
+            )}
+
+            {importStep === "error" && (
+              <div style={{ padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                  <AlertCircle size={20} strokeWidth={1.7} color="var(--danger)" />
+                  <div>
+                    <strong>Échec de l'import</strong>
+                    <p className="muted" style={{ fontSize: 13, margin: "4px 0 12px" }}>{importError}</p>
+                    <button type="button" className="btn ghost sm" onClick={resetImport}>Réessayer</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          <style jsx>{`
+            .spin { animation: spin 1s linear infinite; }
+            @keyframes spin { to { transform: rotate(360deg); } }
+          `}</style>
+        </article>
+      )}
 
       {showForm && (
         <article className="card" style={{ marginBottom: 16 }}>
@@ -414,6 +606,46 @@ function Field({ label, children, full }: { label: string; children: React.React
     <label style={{ display: "flex", flexDirection: "column", gap: 4, gridColumn: full ? "1 / -1" : undefined }}>
       <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>{label}</span>
       {children}
+    </label>
+  );
+}
+
+function InvoiceCsvDropZone({ onFile }: { onFile: (f: File) => void }) {
+  const [isDragging, setIsDragging] = useState(false);
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) onFile(file);
+  }
+  function handleSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) onFile(file);
+  }
+
+  return (
+    <label
+      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={handleDrop}
+      style={{
+        display: "block",
+        padding: 32,
+        border: `2px dashed ${isDragging ? "var(--accent)" : "var(--border-strong)"}`,
+        borderRadius: "var(--r-md)",
+        textAlign: "center",
+        cursor: "pointer",
+        transition: "border-color 0.15s",
+        background: isDragging ? "var(--accent-soft)" : "transparent",
+      }}
+    >
+      <input type="file" accept=".csv,.txt" onChange={handleSelect} style={{ display: "none" }} />
+      <Upload size={26} strokeWidth={1.5} style={{ color: "var(--fg-muted)", marginBottom: 10 }} />
+      <h4 className="serif" style={{ fontSize: 16, margin: "0 0 4px" }}>Dépose ton CSV de factures</h4>
+      <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+        Colonnes attendues : numero, client, ht (ou ttc), tva ou taux_tva, date, echeance · Sépa <code>;</code> ou <code>,</code> · UTF-8 ou Win-1252
+      </p>
     </label>
   );
 }

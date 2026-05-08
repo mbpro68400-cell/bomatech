@@ -29,12 +29,14 @@
   - Sidebar : badge `"2"` hardcodé sur Imports retiré (était un placeholder de mockup).
 
 ## In progress
-- **1.6 — Factures émises** (Phase 1 en cours, 2026-05-08)
-  - Phase 1 — schéma + saisie manuelle ⏳ : migration `0002_invoices_emitted.sql` (à appliquer dans Supabase SQL Editor), table `invoices_emitted`, RLS company-scoped, page `/invoices` avec formulaire de saisie + liste + filtres (Toutes/À payer/En retard/Payées) + actions (marquer payée, annuler, supprimer). V1 simplifiée : paiement total uniquement (1 facture ↔ 1 transaction max).
-  - Phase 2 — import CSV/Excel : à faire après Phase 1 testée.
-  - Phase 3 — rapprochement automatique facture ↔ transaction bancaire avec scoring (montant ±1%, fenêtre temporelle, nom client / n° facture dans libellé). Trois branches explicites : match auto si score ≥ 0.90, suggestion à confirmer si 0.60 ≤ score < 0.90, **pas de match silencieux en cas de mismatch montant** (underpayment → flag « paiement partiel suspecté », overpayment → flag « trop-perçu »).
-  - Phase 4 — DSO + alerte impayé sur dashboard (alert_type `payment_delay` déjà prévu dans le schéma initial).
-  - Phase 5 — factur-X (PDF/A-3 + XML embedded), obligation FR 2026/2027.
+- **1.6 — Factures émises** (Phases 1-2 en cours, 2026-05-08)
+  - **Phase 1 ✅** — schéma + saisie manuelle. Migration `0002_invoices_emitted.sql` appliquée dans Supabase. Table `invoices_emitted`, RLS company-scoped, page `/invoices` avec formulaire + liste + filtres (Toutes/À payer/En retard/Payées) + actions (marquer payée, annuler, supprimer). V1 simplifiée : paiement total uniquement (1 facture ↔ 1 transaction max).
+  - **Phase 2 ⏳** — import CSV. Parser flexible avec aliases FR/EN auto-détectés (numero/client/ht/tva/taux_tva/echeance/…), résolution des montants (HT+rate, HT+TVA, TTC+rate, TTC+TVA), dates ISO ou DD/MM/YYYY. Dédup pré-insert sur `(company_id, number)`. UI inline sur `/invoices` (bouton "Importer CSV" à côté de "Nouvelle facture"). Excel `.xlsx` reporté en V1.5 (le user exporte en CSV depuis Excel/Pennylane/Tiime).
+  - **Phase 3 (nouvelle séquence)** — import PDF unitaire + ZIP en lot. Stratégie LLM + validators anti-hallucination (HT+TVA=TTC ±1c, vat_rate ∈ {0, 0.055, 0.10, 0.20}, dates issued ≤ due). PDF scanné → refus propre. ZIP : limites strictes 50 MB / 100 fichiers / extensions `.pdf`/`.csv` whitelistées / zip-slip protection / extraction tmp/ uniquement / cleanup garanti. Spec à finaliser quand on y arrive.
+  - **Phase 4 (ex-3)** — rapprochement automatique facture ↔ transaction bancaire avec scoring (montant ±1%, fenêtre temporelle, nom client / n° facture dans libellé). Trois branches explicites : match auto si score ≥ 0.90, suggestion à confirmer si 0.60 ≤ score < 0.90, **pas de match silencieux en cas de mismatch montant** (underpayment → flag « paiement partiel suspecté », overpayment → flag « trop-perçu »).
+  - **Phase 5 (ex-4)** — DSO + alerte impayé sur dashboard (alert_type `payment_delay` déjà prévu dans le schéma initial).
+  - **V1.5** — OCR Tesseract pour PDFs scannés (catégorie image-only).
+  - **V2** — factur-X (PDF/A-3 + XML embedded), obligation FR 2026/2027.
 
 ## Next
 - **1.5 (suite) — Pages restantes** : `/insights` (encore en DEMO), `/analytics`, `/simulate`, `/closing`, `/export`, `/settings` (placeholders ou semi-implémentées) à câbler ou supprimer selon priorité.
