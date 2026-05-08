@@ -76,3 +76,6 @@ temp/
 *.zip
 uploads/
 storage/
+
+.vercel
+.env*.local

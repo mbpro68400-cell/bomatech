@@ -37,9 +37,9 @@ BEGIN
     plan
   ) VALUES (
     v_company_id,
-    'Bomatech SAS (test)',
+    'Bomatech SARL (test)',
     '123456789',
-    'SAS',
+    'SARL',
     'FR51123456789',
     1,        -- exercice janvier → décembre
     'EUR',

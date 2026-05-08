@@ -8,13 +8,20 @@
   - Dashboard avec import CSV + Supabase persistence (`888a9ab`).
 - **1.2 — Auth magic link** ✅ (2026-04-26, SHA `fe14a3e`)
   - Route `/auth/callback` exchange `?code=xxx` via `exchangeCodeForSession` (`39dc844`), `emailRedirectTo` → `/auth/callback?next=/dashboard`. Marqué "verified in prod" par `b1883c7` puis `47c4793`.
-- **Housekeeping** (2026-05-08) — `.claude/` ignored (`83e7b11`), tsconfig include `.next/dev/types` pour Next 16 turbopack (`8f69f3b`).
+- **Migration projet Supabase** (2026-05-08)
+  - Ancien projet `tzufjsdkbrgottnrncrq` passé "Unhealthy" puis NXDOMAIN. Recréé sous `fyxarxbsoxjczzfroqxe`.
+  - Schéma `0001_initial.sql` ré-appliqué via SQL Editor. Vercel env vars (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) mises à jour pour Production/Preview/Development. Supabase Auth Redirect URLs reconfigurées (Site URL `https://bomatech.vercel.app`, allow list `/auth/callback`, `localhost:3000`).
+  - ⚠️ La prod runtime était cassée silencieusement entre la disparition de l'ancien projet et aujourd'hui (build Vercel "Ready" mais auth/DB runtime KO car `tzuf...` non résolu DNS).
+- **1.3 — Création company SARL en DB** ✅ (2026-05-08)
+  - User `contact@bomatech.fr` créé via `auth.admin.createUser` (id `7d41fa8a-5732-4cc5-af8d-cde2bbe59e87`).
+  - Company `Bomatech SARL (test)` (id `a1b2c3d4-e5f6-7890-abcd-ef1234567890`, SIREN fictif `123456789`, TVA `FR51123456789`, plan `trial`) + `company_members` rôle `owner`.
+  - Seed adapté SAS → SARL dans `database/seeds/setup_test_company.sql` (cohérent avec ROADMAP). Données fictives, à remplacer par les vraies infos d'entreprise quand on attaquera la prod réelle.
+- **Housekeeping** (2026-05-08) — `.claude/` ignored (`83e7b11`), tsconfig include `.next/dev/types` pour Next 16 turbopack (`8f69f3b`), `.vercel/` et `.env*.local` ignorés racine + `apps/web/`.
 
 ## In progress
-_(rien de visible côté git, et rien hors-git d'après Mag)_
+_(rien)_
 
 ## Next
-- **1.3 — Création company SARL en DB** : `INSERT INTO companies` + `INSERT INTO company_members` liés à `auth.users.id` du compte `contact@bomatech.fr`. ⚠️ Décision "vraies données SIREN/TVA vs anonymisé" à trancher avant exécution.
 - **1.4 — Test import CSV CIC en prod** avec un vrai relevé bancaire.
 - **1.5 — Dashboard / Analytics / Simulate / Imports** : déblocages cascade post-auth (à valider feature par feature).
 
