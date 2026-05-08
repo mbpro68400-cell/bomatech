@@ -33,6 +33,8 @@ export async function listTransactions(
     .select("*")
     .eq("company_id", companyId)
     .order("date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true })
     .limit(limit);
 
   if (error) {
@@ -54,8 +56,18 @@ export async function insertTransactions(
   const batchSize = 100;
   let inserted = 0;
 
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const batch = rows.slice(i, i + batchSize);
+  // Stamp each row with a sequential created_at so the source order
+  // (PDF/CSV row order) is preserved when listing same-date rows.
+  // Postgres `default now()` evaluates once per statement so without this
+  // all rows in a batch would share the exact same created_at.
+  const baseMs = Date.now();
+  const stamped = rows.map((r, i) => ({
+    ...r,
+    created_at: new Date(baseMs + i).toISOString(),
+  })) as (Omit<Transaction, "id"> & { created_at: string })[];
+
+  for (let i = 0; i < stamped.length; i += batchSize) {
+    const batch = stamped.slice(i, i + batchSize);
     const { error, count } = await supabase
       .from("transactions")
       .insert(batch, { count: "exact" });
