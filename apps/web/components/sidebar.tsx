@@ -26,7 +26,7 @@ type NavItem = {
 
 const PILOTAGE: NavItem[] = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard, kbd: "G H" },
-  { href: "/imports", label: "Imports", icon: Download, kbd: "G I", badge: "2" },
+  { href: "/imports", label: "Imports", icon: Download, kbd: "G I" },
   { href: "/transactions", label: "Transactions", icon: Receipt, kbd: "G T" },
   { href: "/analytics", label: "Analytics", icon: BarChart3, kbd: "G A" },
   { href: "/simulate", label: "Simulation", icon: Sparkles, kbd: "G S" },
