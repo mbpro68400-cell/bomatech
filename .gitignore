@@ -79,3 +79,4 @@ storage/
 
 .vercel
 .env*.local
+/.tmp/

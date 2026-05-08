@@ -13,7 +13,7 @@
  * On essaie de gérer les 2 variantes les plus courantes.
  */
 
-import type { Transaction, TxKind } from "../engines/types";
+import type { Transaction, TxKind, TxSource } from "../engines/types";
 
 export interface ParsedRow {
   date: string; // ISO YYYY-MM-DD
@@ -129,6 +129,7 @@ export function parseCicCsv(text: string): ParseResult {
 export function rowsToTransactions(
   rows: ParsedRow[],
   companyId: string,
+  source: TxSource = "csv",
 ): Omit<Transaction, "id">[] {
   return rows.map((r) => ({
     company_id: companyId,
@@ -139,7 +140,7 @@ export function rowsToTransactions(
     category: detectCategory(r.label),
     counterparty: extractCounterparty(r.label),
     label: r.label,
-    source: "csv" as const,
+    source,
     source_ref: hashRow(r),
     reconciled: false,
   }));
@@ -222,14 +223,14 @@ function findColumn(headers: string[], candidates: string[]): number {
   return -1;
 }
 
-function parseFrenchDate(s: string): string | null {
+export function parseFrenchDate(s: string): string | null {
   const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (!m) return null;
   const [, dd, mm, yyyy] = m;
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function parseFrenchAmount(s: string): number {
+export function parseFrenchAmount(s: string): number {
   // "1 234,56" -> 123456 cents
   // "-1234.56" -> -123456 cents
   // "1.234,56" -> 123456 cents (handles dot as thousand sep)

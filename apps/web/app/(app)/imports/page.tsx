@@ -3,35 +3,48 @@
 import { useState } from "react";
 import { Upload, FileText, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { parseCicCsv, rowsToTransactions, type ParseResult } from "@/lib/csv/cic-parser";
+import { parseCicPdf } from "@/lib/pdf/cic-parser";
 import { insertTransactions, getCurrentCompanyId } from "@/lib/queries/transactions";
 
 type Step = "idle" | "parsing" | "preview" | "uploading" | "done" | "error";
+type FileKind = "csv" | "pdf";
+
+function detectKind(filename: string): FileKind {
+  return filename.toLowerCase().endsWith(".pdf") ? "pdf" : "csv";
+}
 
 export default function ImportsPage() {
   const [step, setStep] = useState<Step>("idle");
   const [filename, setFilename] = useState<string>("");
+  const [fileKind, setFileKind] = useState<FileKind>("csv");
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [insertedCount, setInsertedCount] = useState(0);
 
   async function handleFile(file: File) {
     setFilename(file.name);
+    const kind = detectKind(file.name);
+    setFileKind(kind);
     setStep("parsing");
     setErrorMessage("");
 
     try {
-      // Try UTF-8 first, fall back to Windows-1252 (CIC default)
-      let text: string;
-      try {
-        text = await file.text();
-        if (text.includes("\uFFFD")) throw new Error("Invalid UTF-8");
-      } catch {
-        const buffer = await file.arrayBuffer();
-        const decoder = new TextDecoder("windows-1252");
-        text = decoder.decode(buffer);
+      let result: ParseResult;
+      if (kind === "pdf") {
+        result = await parseCicPdf(file);
+      } else {
+        // Try UTF-8 first, fall back to Windows-1252 (CIC default)
+        let text: string;
+        try {
+          text = await file.text();
+          if (text.includes("\uFFFD")) throw new Error("Invalid UTF-8");
+        } catch {
+          const buffer = await file.arrayBuffer();
+          const decoder = new TextDecoder("windows-1252");
+          text = decoder.decode(buffer);
+        }
+        result = parseCicCsv(text);
       }
-
-      const result = parseCicCsv(text);
 
       if (result.rows.length === 0) {
         setErrorMessage(
@@ -60,7 +73,11 @@ export default function ImportsPage() {
       return;
     }
 
-    const transactions = rowsToTransactions(parseResult.rows, companyId);
+    const transactions = rowsToTransactions(
+      parseResult.rows,
+      companyId,
+      fileKind === "pdf" ? "ocr_pdf" : "csv",
+    );
     const { inserted, errors } = await insertTransactions(transactions);
 
     if (errors.length > 0) {
@@ -88,7 +105,7 @@ export default function ImportsPage() {
           <h1 style={{ fontSize: 32, fontWeight: 500, letterSpacing: "-0.02em", margin: 0 }}>
             Import
           </h1>
-          <p>Glisse ton export bancaire CIC. On reconnaît les libellés, dates et montants automatiquement.</p>
+          <p>Glisse ton export bancaire CIC en CSV ou PDF. On reconnaît les libellés, dates et montants automatiquement.</p>
         </div>
       </header>
 
@@ -217,19 +234,19 @@ function DropZone({ onFile }: { onFile: (f: File) => void }) {
       >
         <input
           type="file"
-          accept=".csv,.txt"
+          accept=".csv,.txt,.pdf,application/pdf"
           onChange={handleSelect}
           style={{ display: "none" }}
         />
         <Upload size={32} strokeWidth={1.5} style={{ color: "var(--fg-muted)", marginBottom: 16 }} />
         <h3 className="serif" style={{ fontSize: 22, margin: "0 0 8px", letterSpacing: "-0.02em" }}>
-          Dépose ton export CIC ici
+          Dépose ton export CIC (CSV ou PDF) ici
         </h3>
         <p className="muted" style={{ fontSize: 14, margin: 0 }}>
           ou clique pour parcourir tes fichiers
         </p>
         <p className="muted" style={{ fontSize: 12, marginTop: 16 }}>
-          Format CSV · jusqu'à 10 Mo · encodage UTF-8 ou Windows-1252
+          Formats CSV ou PDF · jusqu'à 10 Mo · encodage UTF-8 ou Windows-1252 (CSV)
         </p>
       </label>
     </article>
