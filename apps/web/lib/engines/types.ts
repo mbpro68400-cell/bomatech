@@ -88,3 +88,36 @@ export interface Insight {
   detected_at: string;
   dismissed: boolean;
 }
+
+// ---------- Factures émises ----------
+// V1 : paiement total uniquement (1 facture ↔ 1 transaction max).
+// V2 prévue : paiements échelonnés via une table invoice_payments. Voir ROADMAP.
+
+export type InvoiceStatus = "pending" | "paid" | "cancelled";
+// "overdue" est dérivé côté UI : status === "pending" && due_at < today.
+
+export type InvoiceSource = "manual" | "csv" | "factur_x" | "pdf_ocr";
+
+export interface Invoice {
+  id: string;
+  company_id: string;
+  number: string;
+  client_name: string;
+  amount_ht_cents: number;
+  amount_tva_cents: number;
+  amount_ttc_cents: number;
+  vat_rate: number | null;
+  issued_at: string;
+  due_at: string;
+  paid_at: string | null;
+  status: InvoiceStatus;
+  matched_transaction_id: string | null;
+  match_confidence: number | null;
+  description: string | null;
+  source: InvoiceSource;
+  source_file: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+}
