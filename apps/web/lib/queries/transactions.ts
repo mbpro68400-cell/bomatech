@@ -27,12 +27,21 @@ export async function getCurrentCompanyId(): Promise<string | null> {
 export async function listTransactions(
   companyId: string,
   limit = 500,
+  opts: { includeClosed?: boolean } = {},
 ): Promise<Transaction[]> {
   const supabase = getBrowserClient();
-  const { data, error } = await supabase
+  let q = supabase
     .from("transactions")
     .select("*")
-    .eq("company_id", companyId)
+    .eq("company_id", companyId);
+
+  // Phase 1.7 : par défaut on n'inclut PAS les écritures de période close.
+  // L'archive (/archives) doit explicitement passer { includeClosed: true }.
+  if (!opts.includeClosed) {
+    q = q.eq("is_closed_period", false);
+  }
+
+  const { data, error } = await q
     .order("date", { ascending: false })
     .order("created_at", { ascending: false })
     .order("id", { ascending: true })

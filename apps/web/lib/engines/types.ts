@@ -38,6 +38,8 @@ export interface Transaction {
   source: TxSource;
   source_ref?: string | null;
   reconciled: boolean;
+  // Phase 1.7 — accounting periods (default false, set autoritairement par trigger PG)
+  is_closed_period?: boolean;
 }
 
 export interface FinancialState {
@@ -120,4 +122,24 @@ export interface Invoice {
   created_at: string;
   updated_at: string;
   created_by: string | null;
+  // Phase 1.7 — accounting periods (default false, set autoritairement par trigger PG)
+  is_closed_period?: boolean;
+}
+
+// Phase 1.7 — accounting periods
+export interface Company {
+  id: string;
+  name: string;
+  current_period_start: string | null;
+  last_closing_date: string | null;
+}
+
+export interface AccountingClosure {
+  id: string;
+  company_id: string;
+  period_start: string;
+  period_end: string;
+  closed_at: string;
+  closed_by: string | null;
+  notes: string | null;
 }

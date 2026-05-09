@@ -20,12 +20,21 @@ export function effectiveStatus(invoice: Invoice, todayIso?: string): EffectiveS
 export async function listInvoices(
   companyId: string,
   limit = 500,
+  opts: { includeClosed?: boolean } = {},
 ): Promise<Invoice[]> {
   const supabase = getBrowserClient();
-  const { data, error } = await supabase
+  let q = supabase
     .from("invoices_emitted")
     .select("*")
-    .eq("company_id", companyId)
+    .eq("company_id", companyId);
+
+  // Phase 1.7 : par défaut on n'inclut PAS les factures de période close.
+  // L'archive (/archives) doit explicitement passer { includeClosed: true }.
+  if (!opts.includeClosed) {
+    q = q.eq("is_closed_period", false);
+  }
+
+  const { data, error } = await q
     .order("issued_at", { ascending: false })
     .order("due_at", { ascending: false })
     .order("id", { ascending: true })
@@ -242,21 +251,24 @@ export async function runMatchingFor(companyId: string): Promise<RunMatchingResu
   // Load FULL invoice set (paid + pending + cancelled) so the engine can build
   // the "tx already attributed" set. The engine internally filters down to
   // "candidates" (pending + matched_transaction_id IS NULL — strict idempotence).
+  // Phase 1.7 : on exclut les rows en période close (lecture seule, hors flow).
   const { data: invoices, error: invErr } = await supabase
     .from("invoices_emitted")
     .select("*")
-    .eq("company_id", companyId);
+    .eq("company_id", companyId)
+    .eq("is_closed_period", false);
   if (invErr || !invoices) {
     errors.push(`Load invoices failed: ${invErr?.message ?? "unknown"}`);
     return { summary: emptySummary(), anomalies: [], errors };
   }
 
-  // Load all revenue transactions in the company
+  // Load all revenue transactions in the company (open period only)
   const { data: txs, error: txErr } = await supabase
     .from("transactions")
     .select("*")
     .eq("company_id", companyId)
     .eq("kind", "revenue")
+    .eq("is_closed_period", false)
     .order("date", { ascending: true })
     .limit(5000);
   if (txErr || !txs) {
