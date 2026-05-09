@@ -132,7 +132,18 @@ export async function bulkInsertInvoices(
     }
   }
 
-  const toInsert = rows.filter((r) => !existing.has(r.number));
+  // Also dedupe INTRA-BATCH : a single ZIP can contain two PDFs that resolve
+  // to the same `number` (e.g. parser regex glitch, filename fallback yielding
+  // the same digit, or genuine accidental duplicates in the source archive).
+  // Without this, a single statement-level INSERT crashes with a unique-violation
+  // and we lose the entire batch.
+  const seenInBatch = new Set<string>();
+  const toInsert = rows.filter((r) => {
+    if (existing.has(r.number)) return false;
+    if (seenInBatch.has(r.number)) return false;
+    seenInBatch.add(r.number);
+    return true;
+  });
   const skipped = rows.length - toInsert.length;
 
   if (toInsert.length === 0) return { inserted: 0, skipped, errors };
@@ -153,13 +164,17 @@ export async function bulkInsertInvoices(
     status: "pending" as const,
   }));
 
+  // Use upsert with ignoreDuplicates so a residual race condition (or a row
+  // we somehow missed in the dedup pass) does NOT abort the whole batch.
+  // PG-level conflict on (company_id, number) is silently skipped and the
+  // remaining rows go through.
   const batchSize = 100;
   let inserted = 0;
   for (let i = 0; i < payload.length; i += batchSize) {
     const batch = payload.slice(i, i + batchSize);
     const { error, count } = await supabase
       .from("invoices_emitted")
-      .insert(batch, { count: "exact" });
+      .upsert(batch, { onConflict: "company_id,number", ignoreDuplicates: true, count: "exact" });
     if (error) {
       errors.push(`Batch ${i}-${i + batch.length}: ${error.message}`);
     } else {
