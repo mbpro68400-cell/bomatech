@@ -70,12 +70,15 @@ export async function parseInvoicePdf(file: File): Promise<ParseInvoicePdfResult
     /date\s+facture\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
     /facture\s+du\s+(\d{2}\/\d{2}\/\d{4})/i,
     /[ée]mise\s+le\s+(\d{2}\/\d{2}\/\d{4})/i,
+    /en\s+date\s+du\s+(\d{2}\/\d{2}\/\d{4})/i,                  // Henrri-style "En date du"
+    /(?:^|\s)le\s+(\d{2}\/\d{2}\/\d{4})\s*[\.,]/i,              // "Le DD/MM/YYYY,"
   ]);
   const due_at = extractDate(flat, [
     /date\s+d[''′]?[ée]ch[ée]ance\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
     /[ée]ch[ée]ance\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
-    /[àa]\s+payer\s+(?:avant\s+)?(?:le\s+)?(\d{2}\/\d{2}\/\d{4})/i,
-    /net\s+[àa]\s+payer\s+(?:avant\s+)?(?:le\s+)?(\d{2}\/\d{2}\/\d{4})/i,
+    /[àa]\s+(?:payer|r[ée]gler)\s+(?:avant\s+)?(?:le\s+)?(\d{2}\/\d{2}\/\d{4})/i,
+    /net\s+[àa]\s+(?:payer|r[ée]gler)\s+(?:avant\s+)?(?:le\s+)?(\d{2}\/\d{2}\/\d{4})/i,
+    /date\s+limite\s*[:\s]+(\d{2}\/\d{2}\/\d{4})/i,
   ]);
   const amounts = extractAmounts(flat);
 
@@ -120,15 +123,49 @@ function extractClient(text: string): string | null {
   const dext = text.match(/destinataire\s+(.+?)\s+(?:adresse\s+de\s+facturation|adress[ée]\s+[àa]|n°\s+siren|\d{1,2}[\s,]+(?:rue|avenue|boulevard|chemin|impasse|all[ée]e))/i);
   if (dext && dext[1]) return cleanLine(dext[1]);
 
-  // Patterns alternatifs : "Facturé à : CLIENT" ou "Client : CLIENT"
+  // Patterns avec libellés explicites : "Facturé à : CLIENT" ou "Client : CLIENT"
+  // Le ':' est OBLIGATOIRE pour distinguer le label d'une simple occurrence du mot
+  // (ex: "facture à la date de paiement" ne doit PAS matcher).
   const alts = [
-    /factur[ée]\s+[àa]\s*[:\s]+([^\n]{2,80}?)(?=\s+(?:adresse|n°|siret|siren|date|description))/i,
-    /client\s*[:\s]+([^\n]{2,80}?)(?=\s+(?:adresse|n°|siret|siren|date|description))/i,
-    /adress[ée]\s+[àa]\s*[:\s]+([^\n]{2,80}?)(?=\s+(?:adresse|n°|siret|siren|date|description))/i,
+    /factur[ée]\s+[àa]\s*:\s*([^\n]{2,80}?)(?=\s+(?:adresse|n°|siret|siren|date|description))/i,
+    /client\s*:\s*([^\n]{2,80}?)(?=\s+(?:adresse|n°|siret|siren|date|description))/i,
+    /adress[ée]\s+[àa]\s*:\s*([^\n]{2,80}?)(?=\s+(?:adresse|n°|siret|siren|date|description))/i,
   ];
   for (const re of alts) {
     const m = text.match(re);
     if (m && m[1]) return cleanLine(m[1]);
+  }
+
+  // Pattern Henrri/FacturAqui : après "À régler avant le DATE." ou similaire, capture
+  // le bloc en MAJUSCULES (au moins 3 chars, ALL CAPS — accents inclus) qui précède
+  // une adresse "X rue|avenue|...". Strictement majuscule pour éviter de capturer
+  // l'article "la" / "le" / "à" depuis le texte courant.
+  const STREET_KW = "(?:rue|avenue|av\\.|boulevard|bd\\.|chemin|impasse|all[ée]e|place|square|cours|route|rte\\.|quai|esplanade|voie|passage|sentier)";
+  const UC = "A-ZÀ-ÖØ-Þ"; // uppercase Latin + accents (U+00C0..U+00D6, U+00D8..U+00DE)
+
+  // Pattern primaire : ancré sur "À régler/payer avant le DATE." → CLIENT + adresse
+  const afterDueLabel = text.match(
+    new RegExp(
+      `[Àà]\\s+(?:r[ée]gler|payer)\\s+(?:avant\\s+)?(?:le\\s+)?\\d{2}\\/\\d{2}\\/\\d{4}[\\s.]+([${UC}][${UC}0-9 \\-&'.]{2,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+      "iu",
+    ),
+  );
+  if (afterDueLabel && afterDueLabel[1]) {
+    const candidate = cleanLine(afterDueLabel[1]);
+    if (candidate.length >= 3 && !/^bomatech$/i.test(candidate)) return candidate;
+  }
+
+  // Fallback : 1er nom ALL-CAPS suivi d'une adresse, en excluant l'émetteur (Bomatech)
+  const candidatesRe = new RegExp(
+    `\\b([${UC}][${UC}0-9 \\-&'.]{2,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+    "gu",
+  );
+  const matches = [...text.matchAll(candidatesRe)];
+  for (const m of matches) {
+    const candidate = cleanLine(m[1]).replace(/[,;]+$/, "").trim();
+    if (!candidate || /^bomatech$/i.test(candidate)) continue;
+    if (candidate.length < 3) continue;
+    return candidate;
   }
   return null;
 }
@@ -162,7 +199,7 @@ function extractAmounts(text: string): ExtractedAmounts {
   // TVA pct + amount : "TVA 0.0 % 0,00 €" or "TVA 20,0 % 100,00 €"
   let tva: number | null = null;
   let vat_rate: number | null = null;
-  const tvaMatch = text.match(/tva\s+([\d.,]+)\s*%\s+([\d  .,\s]+?)\s*€/i);
+  const tvaMatch = text.match(/tva\s+(?:[àa@]|de)?\s*([\d.,]+)\s*%\s+([\d  .,\s]+?)\s*€/i);
   if (tvaMatch) {
     vat_rate = parseRate(tvaMatch[1]);
     tva = toCents(tvaMatch[2]);
