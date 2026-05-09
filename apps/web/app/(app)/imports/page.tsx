@@ -22,45 +22,56 @@ export default function ImportsPage() {
   const [insertedCount, setInsertedCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
 
-  async function handleFile(file: File) {
-    setFilename(file.name);
-    const kind = detectKind(file.name);
-    setFileKind(kind);
+  async function handleFiles(filesArr: File[]) {
+    if (filesArr.length === 0) return;
+    setFilename(filesArr.length === 1 ? filesArr[0].name : `${filesArr.length} fichiers`);
+    // If any file is PDF, treat the whole batch as PDF source for tx_source classification.
+    const anyPdf = filesArr.some((f) => detectKind(f.name) === "pdf");
+    setFileKind(anyPdf ? "pdf" : "csv");
     setStep("parsing");
     setErrorMessage("");
 
-    try {
-      let result: ParseResult;
-      if (kind === "pdf") {
-        result = await parseCicPdf(file);
-      } else {
-        // Try UTF-8 first, fall back to Windows-1252 (CIC default)
-        let text: string;
-        try {
-          text = await file.text();
-          if (text.includes("\uFFFD")) throw new Error("Invalid UTF-8");
-        } catch {
-          const buffer = await file.arrayBuffer();
-          const decoder = new TextDecoder("windows-1252");
-          text = decoder.decode(buffer);
+    const aggregatedRows: ParseResult["rows"] = [];
+    const aggregatedErrors: ParseResult["errors"] = [];
+    let detectedFormat: ParseResult["detectedFormat"] = "single-amount";
+
+    for (const file of filesArr) {
+      try {
+        let result: ParseResult;
+        if (detectKind(file.name) === "pdf") {
+          result = await parseCicPdf(file);
+        } else {
+          let text: string;
+          try {
+            text = await file.text();
+            if (text.includes("\uFFFD")) throw new Error("Invalid UTF-8");
+          } catch {
+            const buffer = await file.arrayBuffer();
+            text = new TextDecoder("windows-1252").decode(buffer);
+          }
+          result = parseCicCsv(text);
         }
-        result = parseCicCsv(text);
+        aggregatedRows.push(...result.rows);
+        for (const e of result.errors) {
+          aggregatedErrors.push({ line: e.line, message: `[${file.name}] ${e.message}` });
+        }
+        if (result.detectedFormat !== "unknown") detectedFormat = result.detectedFormat;
+      } catch (e) {
+        aggregatedErrors.push({
+          line: 0,
+          message: `[${file.name}] ${e instanceof Error ? e.message : String(e)}`,
+        });
       }
-
-      if (result.rows.length === 0) {
-        setErrorMessage(
-          result.errors[0]?.message ?? "Aucune ligne reconnue dans ce fichier.",
-        );
-        setStep("error");
-        return;
-      }
-
-      setParseResult(result);
-      setStep("preview");
-    } catch (e) {
-      setErrorMessage(e instanceof Error ? e.message : String(e));
-      setStep("error");
     }
+
+    if (aggregatedRows.length === 0) {
+      setErrorMessage(aggregatedErrors[0]?.message ?? "Aucune ligne reconnue dans ces fichiers.");
+      setStep("error");
+      return;
+    }
+
+    setParseResult({ rows: aggregatedRows, errors: aggregatedErrors, detectedFormat });
+    setStep("preview");
   }
 
   async function confirmImport() {
@@ -112,7 +123,7 @@ export default function ImportsPage() {
         </div>
       </header>
 
-      {step === "idle" && <DropZone onFile={handleFile} />}
+      {step === "idle" && <DropZone onFiles={handleFiles} />}
 
       {step === "parsing" && (
         <article className="card">
@@ -205,19 +216,19 @@ export default function ImportsPage() {
 
 // ============ Dropzone ============
 
-function DropZone({ onFile }: { onFile: (f: File) => void }) {
+function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
   const [isDragging, setIsDragging] = useState(false);
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) onFile(file);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) onFiles(files);
   }
 
   function handleSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) onFile(file);
+    const files = Array.from(e.target.files ?? []);
+    if (files.length > 0) onFiles(files);
   }
 
   return (
@@ -244,18 +255,19 @@ function DropZone({ onFile }: { onFile: (f: File) => void }) {
         <input
           type="file"
           accept=".csv,.txt,.pdf,application/pdf"
+          multiple
           onChange={handleSelect}
           style={{ display: "none" }}
         />
         <Upload size={32} strokeWidth={1.5} style={{ color: "var(--fg-muted)", marginBottom: 16 }} />
         <h3 className="serif" style={{ fontSize: 22, margin: "0 0 8px", letterSpacing: "-0.02em" }}>
-          Dépose ton export CIC (CSV ou PDF) ici
+          Dépose tes exports CIC (CSV ou PDF) ici
         </h3>
         <p className="muted" style={{ fontSize: 14, margin: 0 }}>
-          ou clique pour parcourir tes fichiers
+          un ou plusieurs fichiers, ou clique pour parcourir
         </p>
         <p className="muted" style={{ fontSize: 12, marginTop: 16 }}>
-          Formats CSV ou PDF · jusqu'à 10 Mo · encodage UTF-8 ou Windows-1252 (CSV)
+          Formats CSV ou PDF · multi-fichiers OK · doublons auto-détectés (par contenu)
         </p>
       </label>
     </article>

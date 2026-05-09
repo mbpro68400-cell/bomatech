@@ -83,7 +83,56 @@ export async function insertTransactions(
     }
   }
 
-  const toInsert = rows.filter((r) => !r.source_ref || !existing.has(r.source_ref));
+  const afterSrcRefDedup = rows.filter((r) => !r.source_ref || !existing.has(r.source_ref));
+
+  // Second dedup pass : by content key (date + amount + normalized label).
+  // Catches duplicates that slipped through source_ref dedup — typically when
+  // the same bank movement has been imported once via CSV (source_ref = synthetic
+  // hash) and once via PDF (source_ref = native CIC ref like VG40924FLMT58B01).
+  // These two source_refs differ → first dedup misses ; the content key
+  // (date+amount+normalized label) catches them.
+  const contentKey = (date: string, amount: number, label: string) => {
+    const norm = label
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .slice(0, 50);
+    return `${date}|${amount}|${norm}`;
+  };
+
+  const dates = afterSrcRefDedup.map((r) => r.date).sort();
+  const minDate = dates[0];
+  const maxDate = dates[dates.length - 1];
+  const existingContent = new Set<string>();
+  if (minDate && maxDate) {
+    const { data: existingRows, error: contErr } = await supabase
+      .from("transactions")
+      .select("date, amount_cents, label")
+      .eq("company_id", companyId)
+      .gte("date", minDate)
+      .lte("date", maxDate);
+    if (contErr) {
+      errors.push(`Content dedup fetch failed: ${contErr.message}`);
+    } else {
+      for (const er of existingRows ?? []) {
+        existingContent.add(contentKey(er.date as string, er.amount_cents as number, er.label as string));
+      }
+    }
+  }
+
+  // Apply content dedup AND intra-batch dedup (avoid two CSV/PDF files in the same
+  // import batch from inserting the same transaction twice).
+  const seenInBatch = new Set<string>();
+  const toInsert: typeof afterSrcRefDedup = [];
+  for (const r of afterSrcRefDedup) {
+    const key = contentKey(r.date, r.amount_cents, r.label);
+    if (existingContent.has(key)) continue;
+    if (seenInBatch.has(key)) continue;
+    seenInBatch.add(key);
+    toInsert.push(r);
+  }
   const skipped = rows.length - toInsert.length;
 
   if (toInsert.length === 0) return { inserted: 0, skipped, errors };
