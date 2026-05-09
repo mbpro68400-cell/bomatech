@@ -74,7 +74,7 @@ export async function parseInvoicePdf(file: File): Promise<ParseInvoicePdfResult
     /en\s+date\s+du\s+(\d{2}\/\d{2}\/\d{4})/i,                  // Henrri-style "En date du"
     /(?:^|\s)le\s+(\d{2}\/\d{2}\/\d{4})\s*[\.,]/i,              // "Le DD/MM/YYYY,"
   ]);
-  const due_at = extractDate(flat, [
+  let due_at = extractDate(flat, [
     /date\s+d[''′]?[ée]ch[ée]ance\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
     /[ée]ch[ée]ance\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
     /[àa]\s+(?:payer|r[ée]gler)\s+(?:avant\s+)?(?:le\s+)?(\d{2}\/\d{2}\/\d{4})/i,
@@ -83,14 +83,27 @@ export async function parseInvoicePdf(file: File): Promise<ParseInvoicePdfResult
   ]);
   const amounts = extractAmounts(flat);
 
+  // Filename fallback : Mag's archives follow the pattern
+  // "<CLIENT> - <YYYY-MM-DD> - <NUMBER>.pdf". When a field could not be
+  // extracted from the PDF text (custom Excel-style invoices, scan-imitating
+  // layouts, etc.), use the filename as a last-chance source.
+  const fb = extractFromFilename(file.name);
+  const finalIssued = issued_at ?? fb.issued ?? null;
+
+  // "Paiement à réception" → due = issued (immédiat). Apply AFTER the filename
+  // fallback so finalIssued is the merged value.
+  if (due_at == null && finalIssued != null && /paiement\s+[àa]\s+r[ée]ception|comptant\s+[àa]\s+r[ée]ception/i.test(flat)) {
+    due_at = finalIssued;
+  }
+
   const invoice: ParsedInvoiceFromPdf = {
-    number,
-    client_name,
+    number: number ?? fb.number ?? null,
+    client_name: client_name ?? fb.client ?? null,
     amount_ht_cents: amounts.ht,
     amount_tva_cents: amounts.tva,
     amount_ttc_cents: amounts.ttc,
     vat_rate: amounts.vat_rate,
-    issued_at,
+    issued_at: finalIssued,
     due_at,
     rawText: text,
   };
@@ -105,16 +118,39 @@ export async function parseInvoicePdf(file: File): Promise<ParseInvoicePdfResult
 
 // ---------- Field extractors ----------
 
+/**
+ * Filename-based fallback. Mag's invoice archives are named as:
+ *   "<CLIENT NAME> - YYYY-MM-DD - <NUMBER>.pdf"
+ * When the PDF text doesn't expose those fields explicitly (custom layouts),
+ * we pull them from the filename. The PDF text always wins when present.
+ */
+function extractFromFilename(filename: string): { client?: string; issued?: string; number?: string } {
+  const base = filename.replace(/\.pdf$/i, "");
+  // Pattern: "anything (lazy) - YYYY-MM-DD - anything"
+  const m = base.match(/^(.+?)\s+-\s+(\d{4}-\d{2}-\d{2})\s+-\s+(.+)$/);
+  if (!m) return {};
+  const client = m[1].trim();
+  const issued = m[2];
+  // Number sometimes has trailing words ("F-2024-002 CIC") — keep only the first
+  // alphanumeric token if it contains a digit, otherwise the whole thing.
+  const numRaw = m[3].trim();
+  const numFirstTok = numRaw.split(/\s+/)[0];
+  const number = /\d/.test(numFirstTok) ? numFirstTok : numRaw;
+  return { client, issued, number };
+}
+
 function extractNumber(text: string): string | null {
   const patterns = [
-    /n°?\s*(?:de\s*)?facture\s*[:\s]+([A-Z0-9_/-]+)/i,
+    /(?:n°?|num[ée]ro)\s*(?:de\s*)?facture\s*[:\s]+([A-Z0-9_/-]+)/i,
     /facture\s+n°?\s*[:\s]+([A-Z0-9_/-]+)/i,
     /invoice\s+(?:no|number|#)\s*[:\s]+([A-Z0-9_/-]+)/i,
     /r[ée]f[ée]rence\s+facture\s*[:\s]+([A-Z0-9_/-]+)/i,
   ];
   for (const re of patterns) {
     const m = text.match(re);
-    if (m && m[1]) return m[1].trim();
+    // Require at least one digit so we don't accidentally capture column headers
+    // like "DATE" or "CLIENT" in custom layouts where they sit right after "N° FACTURE".
+    if (m && m[1] && /\d/.test(m[1])) return m[1].trim();
   }
   return null;
 }
@@ -143,33 +179,53 @@ function extractClient(text: string): string | null {
   // l'article "la" / "le" / "à" depuis le texte courant.
   // STREET_KW : accepte aussi la première lettre en majuscule (ex: "Rue", "Avenue")
   const STREET_KW = "(?:[Rr]ue|[Aa]venue|[Aa]v\\.|[Bb]oulevard|[Bb]d\\.|[Cc]hemin|[Ii]mpasse|[Aa]ll[ée]e|[Pp]lace|[Ss]quare|[Cc]ours|[Rr]oute|[Rr]te\\.|[Qq]uai|[Ee]splanade|[Vv]oie|[Pp]assage|[Ss]entier)";
-  const UC = "A-ZÀ-ÖØ-Þ"; // uppercase Latin + accents (U+00C0..U+00D6, U+00D8..U+00DE)
-  // Body chars : 1ère lettre uppercase, suite mixed case (pour "SCI Houston", "Ixina Wittenheim", etc.).
-  // Pas de flag `i` pour ne PAS laisser passer "la", "le", "à" en début de capture.
-  const NAME_BODY = "A-Za-zÀ-ÿ0-9 \\-&'.";
+  const UC = "A-ZÀ-ÖØ-Þ"; // uppercase Latin + accents
+  // NAME_BODY : letters + space + select punct, NO digits (pour éviter de gober une adresse).
+  const NAME_BODY = "A-Za-zÀ-ÿ \\-&'.";
 
-  // Pattern primaire : ancré sur "À régler/payer avant le DATE." → CLIENT + adresse
-  const afterDueLabel = text.match(
+  // Helper : strip leading "BOMATECH " if the multi-column layout merged emitter + recipient
+  const stripIssuer = (s: string) => s.replace(/^bomatech\s+/i, "").trim();
+
+  // Reject false-positives that contain a street keyword anywhere
+  // (ex: "GRANDE RUE" sneaking through the fallback as the captured client name).
+  const STREET_WORD_RE = /\b(rue|avenue|av\.|boulevard|bd\.|chemin|impasse|all[ée]e|place|square|cours|route|rte\.|quai|esplanade|voie|passage|sentier)\b/i;
+  const isCleanClient = (s: string) => s.length >= 4 && !/^bomatech$/i.test(s) && !STREET_WORD_RE.test(s);
+
+  // Pattern A (ancré, ALL CAPS multi-words) : "À régler avant le DATE.<CAPSWORD>+ ..."
+  // Capture des séquences "WORD WORD WORD" où chaque WORD est ALL CAPS (≥2 chars).
+  const allCapsAfter = text.match(
     new RegExp(
-      `[Àà]\\s+(?:r[ée]gler|payer)\\s+(?:avant\\s+)?(?:le\\s+)?\\d{2}\\/\\d{2}\\/\\d{4}[\\s.]+([${UC}][${NAME_BODY}]{3,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+      `[Àà]\\s+(?:r[ée]gler|payer)\\s+(?:avant\\s+)?(?:le\\s+)?\\d{2}\\/\\d{2}\\/\\d{4}[\\s.]+([${UC}]{2,}(?: [${UC}]{2,})*)`,
       "u",
     ),
   );
-  if (afterDueLabel && afterDueLabel[1]) {
-    const candidate = cleanLine(afterDueLabel[1]);
-    if (candidate.length >= 4 && !/^bomatech$/i.test(candidate)) return candidate;
+  if (allCapsAfter && allCapsAfter[1]) {
+    const candidate = stripIssuer(cleanLine(allCapsAfter[1]));
+    if (isCleanClient(candidate)) return candidate;
   }
 
-  // Fallback : 1er nom (1ère majuscule, suite mixed) suivi d'une adresse, en excluant Bomatech
+  // Pattern B (ancré, mixed case) : "À régler avant le DATE.<NAME> <num> <street>"
+  const mixedCaseAfter = text.match(
+    new RegExp(
+      `[Àà]\\s+(?:r[ée]gler|payer)\\s+(?:avant\\s+)?(?:le\\s+)?\\d{2}\\/\\d{2}\\/\\d{4}[\\s.]+([${UC}][${NAME_BODY}]{3,30}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+      "u",
+    ),
+  );
+  if (mixedCaseAfter && mixedCaseAfter[1]) {
+    const candidate = stripIssuer(cleanLine(mixedCaseAfter[1]));
+    if (isCleanClient(candidate)) return candidate;
+  }
+
+  // Fallback (non-ancré) : nom (1ère majuscule, suite mixed) suivi d'une adresse,
+  // en excluant Bomatech. Max 30 chars pour ne pas gober une longue adresse.
   const candidatesRe = new RegExp(
-    `\\b([${UC}][${NAME_BODY}]{3,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+    `\\b([${UC}][${NAME_BODY}]{3,30}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
     "gu",
   );
   const matches = [...text.matchAll(candidatesRe)];
   for (const m of matches) {
-    const candidate = cleanLine(m[1]).replace(/[,;]+$/, "").trim();
-    if (!candidate || /^bomatech$/i.test(candidate)) continue;
-    if (candidate.length < 4) continue;
+    const candidate = stripIssuer(cleanLine(m[1]).replace(/[,;]+$/, "")).trim();
+    if (!isCleanClient(candidate)) continue;
     return candidate;
   }
   return null;
@@ -196,7 +252,8 @@ interface ExtractedAmounts {
 function extractAmounts(text: string): ExtractedAmounts {
   // Sous-total (HT)
   let ht: number | null = null;
-  const htMatch = text.match(/sous[\s-]?total\s*(?:\(\s*ht\s*\))?\s*[:]?\s*([\d  .,\s]+?)\s*€/i)
+  const htMatch = text.match(/total\s*\(\s*ht\s*\)\s*[:]?\s*([\d.,\s]+?)\s*€/i)
+    ?? text.match(/sous[\s-]?total\s*(?:\(\s*ht\s*\))?\s*[:]?\s*([\d  .,\s]+?)\s*€/i)
     ?? text.match(/total\s+ht\s*[:]?\s*([\d  .,\s]+?)\s*€/i)
     ?? text.match(/montant\s+ht\s*[:]?\s*([\d  .,\s]+?)\s*€/i);
   if (htMatch) ht = toCents(htMatch[1]);
@@ -214,6 +271,12 @@ function extractAmounts(text: string): ExtractedAmounts {
     if (tvaAmount) tva = toCents(tvaAmount[1]);
     const rateAlone = text.match(/taux\s+(?:de\s+)?tva\s*[:]?\s*([\d.,]+)\s*%/i);
     if (rateAlone) vat_rate = parseRate(rateAlone[1]);
+  }
+
+  // Explicit "TVA non applicable" notice (article 293 B CGI) — auto-entrepreneurs / micro
+  // entreprises. If no rate found yet, set it to 0 so derivation below produces HT=TTC, TVA=0.
+  if (vat_rate == null && /tva\s+non\s+applicable/i.test(text)) {
+    vat_rate = 0;
   }
 
   // Total (TTC) — prend la dernière occurrence pour éviter de matcher "Sous-total"
