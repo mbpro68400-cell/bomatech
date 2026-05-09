@@ -115,6 +115,7 @@ export default function InvoicesPage() {
   const [importError, setImportError] = useState<string>("");
   const [importInserted, setImportInserted] = useState(0);
   const [importSkipped, setImportSkipped] = useState(0);
+  const [importArchived, setImportArchived] = useState(0);
 
   // PDF import state (single file)
   const [showPdfImport, setShowPdfImport] = useState(false);
@@ -132,6 +133,7 @@ export default function InvoicesPage() {
   const [zipError, setZipError] = useState<string>("");
   const [zipInserted, setZipInserted] = useState(0);
   const [zipSkippedDb, setZipSkippedDb] = useState(0);
+  const [zipArchived, setZipArchived] = useState(0);
 
 
   const today = todayIso();
@@ -254,7 +256,7 @@ export default function InvoicesPage() {
   async function confirmImport() {
     if (!importParseResult || !companyId) return;
     setImportStep("uploading");
-    const { inserted, skipped, errors } = await bulkInsertInvoices(
+    const { inserted, skipped, errors, archivedInserted } = await bulkInsertInvoices(
       companyId,
       importParseResult.rows,
       "csv",
@@ -267,6 +269,7 @@ export default function InvoicesPage() {
     }
     setImportInserted(inserted);
     setImportSkipped(skipped);
+    setImportArchived(archivedInserted);
     setImportStep("done");
     await refresh(companyId);
   }
@@ -279,6 +282,7 @@ export default function InvoicesPage() {
     setImportError("");
     setImportInserted(0);
     setImportSkipped(0);
+    setImportArchived(0);
   }
 
   // ---------- PDF unitaire ----------
@@ -435,7 +439,7 @@ export default function InvoicesPage() {
       return;
     }
 
-    const { inserted, skipped, errors } = await bulkInsertInvoices(companyId, bulk, "csv", zipFilename);
+    const { inserted, skipped, errors, archivedInserted } = await bulkInsertInvoices(companyId, bulk, "csv", zipFilename);
     if (errors.length > 0) {
       setZipError(`${errors.length} erreur(s) à l'insertion : ${errors[0]}`);
       setZipStep("error");
@@ -443,6 +447,7 @@ export default function InvoicesPage() {
     }
     setZipInserted(inserted);
     setZipSkippedDb(skipped);
+    setZipArchived(archivedInserted);
     setZipStep("done");
     await refresh(companyId);
   }
@@ -456,6 +461,7 @@ export default function InvoicesPage() {
     setZipError("");
     setZipInserted(0);
     setZipSkippedDb(0);
+    setZipArchived(0);
   }
 
   async function unmatchPaidInvoice(invoice: Invoice) {
@@ -626,11 +632,16 @@ export default function InvoicesPage() {
                     {importInserted > 0 ? "Import terminé" : "Rien à importer"}
                   </h3>
                 </div>
-                <p style={{ fontSize: 13, margin: "0 0 12px" }}>
+                <p style={{ fontSize: 13, margin: "0 0 8px" }}>
                   <strong>{importInserted}</strong> facture{importInserted > 1 ? "s" : ""} importée{importInserted > 1 ? "s" : ""}
                   {importSkipped > 0 ? ` · ${importSkipped} doublon${importSkipped > 1 ? "s" : ""} ignoré${importSkipped > 1 ? "s" : ""}` : ""}
                   {" depuis "}<strong>{importFilename}</strong>.
                 </p>
+                {importArchived > 0 && (
+                  <p style={{ fontSize: 12, margin: "0 0 12px", padding: 8, background: "var(--surface-sunken)", borderRadius: 6 }}>
+                    <strong>{importInserted - importArchived}</strong> dans la période courante · <strong>{importArchived}</strong> archivée{importArchived > 1 ? "s" : ""} (issued_at ≤ dernière clôture). Voir <a href="/archives" style={{ textDecoration: "underline" }}>Archives</a>.
+                  </p>
+                )}
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   <button type="button" className="btn ghost" onClick={resetImport}>Fermer</button>
                 </div>
@@ -811,11 +822,16 @@ export default function InvoicesPage() {
                     {zipInserted > 0 ? "Lot importé" : "Rien à importer"}
                   </h3>
                 </div>
-                <p style={{ fontSize: 13, margin: "0 0 12px" }}>
+                <p style={{ fontSize: 13, margin: "0 0 8px" }}>
                   <strong>{zipInserted}</strong> facture{zipInserted > 1 ? "s" : ""} importée{zipInserted > 1 ? "s" : ""}
                   {zipSkippedDb > 0 ? ` · ${zipSkippedDb} doublon${zipSkippedDb > 1 ? "s" : ""} ignoré${zipSkippedDb > 1 ? "s" : ""}` : ""}
                   {" depuis "}<strong>{zipFilename}</strong>.
                 </p>
+                {zipArchived > 0 && (
+                  <p style={{ fontSize: 12, margin: "0 0 12px", padding: 8, background: "var(--surface-sunken)", borderRadius: 6 }}>
+                    <strong>{zipInserted - zipArchived}</strong> dans la période courante · <strong>{zipArchived}</strong> archivée{zipArchived > 1 ? "s" : ""} (issued_at ≤ dernière clôture). Voir <a href="/archives" style={{ textDecoration: "underline" }}>Archives</a>.
+                  </p>
+                )}
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   <button type="button" className="btn ghost" onClick={resetZipImport}>Fermer</button>
                 </div>

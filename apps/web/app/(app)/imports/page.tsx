@@ -21,6 +21,8 @@ export default function ImportsPage() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [insertedCount, setInsertedCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
+  const [archivedInsertedCount, setArchivedInsertedCount] = useState(0);
+  const [openInsertedCount, setOpenInsertedCount] = useState(0);
 
   async function handleFiles(filesArr: File[]) {
     if (filesArr.length === 0) return;
@@ -90,7 +92,7 @@ export default function ImportsPage() {
       companyId,
       fileKind === "pdf" ? "ocr_pdf" : "csv",
     );
-    const { inserted, skipped, errors } = await insertTransactions(transactions);
+    const { inserted, skipped, errors, archivedInserted, openInserted } = await insertTransactions(transactions);
 
     if (errors.length > 0) {
       setErrorMessage(`${errors.length} erreur(s) à l'import : ${errors[0]}`);
@@ -100,6 +102,8 @@ export default function ImportsPage() {
 
     setInsertedCount(inserted);
     setSkippedCount(skipped);
+    setArchivedInsertedCount(archivedInserted);
+    setOpenInsertedCount(openInserted);
     setStep("done");
   }
 
@@ -110,6 +114,8 @@ export default function ImportsPage() {
     setFilename("");
     setInsertedCount(0);
     setSkippedCount(0);
+    setArchivedInsertedCount(0);
+    setOpenInsertedCount(0);
   }
 
   return (
@@ -161,16 +167,20 @@ export default function ImportsPage() {
                 {insertedCount > 0 ? "Import réussi" : "Rien à importer"}
               </h2>
             </div>
-            <p style={{ margin: "0 0 20px", fontSize: 14 }}>
+            <p style={{ margin: "0 0 12px", fontSize: 14 }}>
               <strong>{insertedCount}</strong> transaction{insertedCount > 1 ? "s" : ""} importée{insertedCount > 1 ? "s" : ""} depuis <strong>{filename}</strong>
-              {skippedCount > 0 ? (
-                <>
-                  . <strong>{skippedCount}</strong> doublon{skippedCount > 1 ? "s" : ""} ignoré{skippedCount > 1 ? "s" : ""} (déjà présent{skippedCount > 1 ? "s" : ""} en base).
-                </>
-              ) : (
-                <>. Tu peux maintenant aller voir ton tableau de bord.</>
+              {skippedCount > 0 && (
+                <> · <strong>{skippedCount}</strong> doublon{skippedCount > 1 ? "s" : ""} ignoré{skippedCount > 1 ? "s" : ""}</>
               )}
+              .
             </p>
+            {archivedInsertedCount > 0 && (
+              <p style={{ margin: "0 0 20px", fontSize: 13, padding: 10, background: "var(--surface-sunken)", borderRadius: 6 }}>
+                <strong>{openInsertedCount}</strong> dans la période courante ·{" "}
+                <strong>{archivedInsertedCount}</strong> archivée{archivedInsertedCount > 1 ? "s" : ""} (date ≤ dernière clôture).
+                {" "}Les écritures archivées sont consultables dans <a href="/archives" style={{ textDecoration: "underline" }}>Archives</a>.
+              </p>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <a href="/dashboard" className="btn primary sm" style={{ textDecoration: "none" }}>
                 Voir le dashboard →

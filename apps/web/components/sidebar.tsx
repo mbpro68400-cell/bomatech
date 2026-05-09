@@ -12,6 +12,8 @@ import {
   Sparkles,
   Bell,
   CalendarCheck,
+  Lock,
+  Archive,
   FileSpreadsheet,
   Settings,
   ChevronDown,
@@ -39,6 +41,8 @@ const PILOTAGE: NavItem[] = [
 ];
 
 const COMPTABLE: NavItem[] = [
+  { href: "/periods", label: "Périodes", icon: Lock },
+  { href: "/archives", label: "Archives", icon: Archive },
   { href: "/export", label: "Export comptable", icon: FileSpreadsheet },
   { href: "/settings", label: "Paramètres", icon: Settings },
 ];

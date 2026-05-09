@@ -56,11 +56,21 @@ export async function listTransactions(
 
 export async function insertTransactions(
   rows: Omit<Transaction, "id">[],
-): Promise<{ inserted: number; skipped: number; errors: string[] }> {
-  if (rows.length === 0) return { inserted: 0, skipped: 0, errors: [] };
+): Promise<{ inserted: number; skipped: number; errors: string[]; archivedInserted: number; openInserted: number }> {
+  if (rows.length === 0) return { inserted: 0, skipped: 0, errors: [], archivedInserted: 0, openInserted: 0 };
 
   const supabase = getBrowserClient();
   const errors: string[] = [];
+
+  // Phase 1.7 : load last_closing_date once to compute archived/open breakdown.
+  // The PG trigger will set is_closed_period autoritairement on insert ; we
+  // pre-compute the same boundary client-side to report the breakdown to the user.
+  const { data: companyRow } = await supabase
+    .from("companies")
+    .select("last_closing_date")
+    .eq("id", rows[0].company_id)
+    .maybeSingle();
+  const lastClosingDate = (companyRow as { last_closing_date: string | null } | null)?.last_closing_date ?? null;
 
   // Dedup: a row is a duplicate if (company_id, source_ref) already exists.
   // source_ref is set by rowsToTransactions: real CIC ref (VGxxxx, RUM:, …) for
@@ -176,7 +186,16 @@ export async function insertTransactions(
     await runMatchingFor(companyId).catch(() => {});
   }
 
-  return { inserted, skipped, errors };
+  // Phase 1.7 breakdown : count rows whose date <= last_closing_date (archived)
+  // vs the rest (open). Counted on toInsert (pre-insert) since the PG trigger
+  // applies the same logic — diverges from `inserted` only if some rows failed
+  // to insert, which is rare and acceptable as an approximation V1.
+  const archivedInserted = lastClosingDate
+    ? toInsert.filter((r) => r.date <= lastClosingDate).length
+    : 0;
+  const openInserted = toInsert.length - archivedInserted;
+
+  return { inserted, skipped, errors, archivedInserted, openInserted };
 }
 
 export async function getLatestState(companyId: string): Promise<FinancialState | null> {

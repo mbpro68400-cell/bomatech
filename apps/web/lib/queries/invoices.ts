@@ -115,11 +115,19 @@ export async function bulkInsertInvoices(
   rows: BulkInvoiceInput[],
   source: "csv" | "factur_x" | "pdf_ocr" = "csv",
   sourceFile?: string,
-): Promise<{ inserted: number; skipped: number; errors: string[] }> {
-  if (rows.length === 0) return { inserted: 0, skipped: 0, errors: [] };
+): Promise<{ inserted: number; skipped: number; errors: string[]; archivedInserted: number; openInserted: number }> {
+  if (rows.length === 0) return { inserted: 0, skipped: 0, errors: [], archivedInserted: 0, openInserted: 0 };
 
   const supabase = getBrowserClient();
   const errors: string[] = [];
+
+  // Phase 1.7 : load last_closing_date once for the archived/open breakdown.
+  const { data: companyRow } = await supabase
+    .from("companies")
+    .select("last_closing_date")
+    .eq("id", companyId)
+    .maybeSingle();
+  const lastClosingDate = (companyRow as { last_closing_date: string | null } | null)?.last_closing_date ?? null;
 
   // Pre-check existing numbers for this company to avoid unique-violation noise
   const incomingNumbers = rows.map((r) => r.number);
@@ -155,7 +163,7 @@ export async function bulkInsertInvoices(
   });
   const skipped = rows.length - toInsert.length;
 
-  if (toInsert.length === 0) return { inserted: 0, skipped, errors };
+  if (toInsert.length === 0) return { inserted: 0, skipped, errors, archivedInserted: 0, openInserted: 0 };
 
   const payload = toInsert.map((r) => ({
     company_id: companyId,
@@ -196,7 +204,13 @@ export async function bulkInsertInvoices(
     await runMatchingFor(companyId).catch(() => {});
   }
 
-  return { inserted, skipped, errors };
+  // Phase 1.7 breakdown : archived = issued_at <= last_closing_date.
+  const archivedInserted = lastClosingDate
+    ? toInsert.filter((r) => r.issued_at <= lastClosingDate).length
+    : 0;
+  const openInserted = toInsert.length - archivedInserted;
+
+  return { inserted, skipped, errors, archivedInserted, openInserted };
 }
 
 export async function deleteInvoice(id: string): Promise<{ ok: boolean; error: string | null }> {

@@ -10,6 +10,8 @@ const PROTECTED = [
   "/simulate",
   "/insights",
   "/closing",
+  "/periods",
+  "/archives",
   "/export",
   "/upload",
   "/settings",

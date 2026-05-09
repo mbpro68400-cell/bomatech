@@ -10,6 +10,7 @@ import {
   upsertState,
 } from "@/lib/queries/transactions";
 import { listInvoices } from "@/lib/queries/invoices";
+import { getCompanyPeriod, type CompanyPeriod } from "@/lib/queries/accounting";
 import { recomputeFull } from "@/lib/engines/financial-state";
 import { evaluateInsights, evaluateInvoiceInsights } from "@/lib/engines/decision";
 import { computeARSummary, emptyARSummary, type ARSummary } from "@/lib/engines/invoice-stats";
@@ -33,6 +34,7 @@ export default function DashboardPage() {
   const [insights, setInsights] = useState<Insight[]>([]);
   const [txCount, setTxCount] = useState(0);
   const [ar, setAr] = useState<ARSummary>(emptyARSummary());
+  const [period, setPeriod] = useState<CompanyPeriod | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,11 +46,13 @@ export default function DashboardPage() {
         return;
       }
 
-      // Phase 5 : load transactions + invoices in parallel
-      const [transactions, invoices] = await Promise.all([
+      // Phase 5 + 1.7 : load transactions + invoices + period in parallel
+      const [transactions, invoices, periodData] = await Promise.all([
         listTransactions(companyId, 1000),
         listInvoices(companyId, 1000),
+        getCompanyPeriod(companyId),
       ]);
+      if (!cancelled) setPeriod(periodData);
       if (cancelled) return;
 
       setTxCount(transactions.length);
@@ -106,6 +110,39 @@ export default function DashboardPage() {
 
   return (
     <>
+      {period && (period.current_period_start || period.last_closing_date) && (
+        <div style={{
+          padding: "8px 14px",
+          marginBottom: 12,
+          background: "var(--surface-sunken)",
+          borderRadius: 6,
+          fontSize: 12,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+        }}>
+          <span>
+            <span className="muted">Période courante :</span>{" "}
+            <strong>
+              {period.current_period_start
+                ? `depuis le ${new Date(period.current_period_start).toLocaleDateString("fr-FR")}`
+                : "non définie"}
+            </strong>
+            {period.last_closing_date && (
+              <>
+                {" · "}
+                <span className="muted">Dernière clôture :</span>{" "}
+                <strong>{new Date(period.last_closing_date).toLocaleDateString("fr-FR")}</strong>
+              </>
+            )}
+          </span>
+          <a href="/archives" style={{ textDecoration: "none", fontSize: 12 }}>
+            Voir archives →
+          </a>
+        </div>
+      )}
+
       <header className="page-head">
         <div>
           <h1 style={{ fontSize: 32, fontWeight: 500, letterSpacing: "-0.02em", margin: 0 }}>
