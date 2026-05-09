@@ -8,8 +8,10 @@ import type {
   AlertType,
   FinancialState,
   Insight,
+  Invoice,
   Transaction,
 } from "./types";
+import { computeARSummary } from "./invoice-stats";
 
 const THRESHOLDS = {
   CONCENTRATION_WARNING: 0.30,
@@ -112,6 +114,10 @@ export function evaluateInsights(
   // Cost anomalies
   insights.push(...detectCostAnomalies(state, transactions));
 
+  // Note : les insights "payment_delay" sont calculés séparément par
+  // evaluateInvoiceInsights() depuis les factures émises (pas depuis le
+  // financial_state). Le dashboard appelle les deux et merge.
+
   // Positive signals
   if (state.gross_margin_pct > 0.4) {
     insights.push(
@@ -123,6 +129,46 @@ export function evaluateInsights(
         facts: {
           gross_margin_pct: state.gross_margin_pct,
           revenue_90d_cents: state.revenue_90d,
+        },
+      }),
+    );
+  }
+
+  return insights;
+}
+
+/**
+ * Phase 5 : insights "payment_delay" basés sur les factures émises.
+ * - Génère 1 insight global si au moins une facture est en retard.
+ * - Severity : critical si >60j, warning si >30j, info sinon.
+ */
+export function evaluateInvoiceInsights(
+  companyId: string,
+  invoices: Invoice[],
+  asOfIso: string,
+): Insight[] {
+  const insights: Insight[] = [];
+  const ar = computeARSummary(invoices, asOfIso);
+
+  if (ar.overdueCount > 0) {
+    const level: AlertLevel =
+      ar.oldestOverdueDays > 60 ? "critical" : ar.oldestOverdueDays > 30 ? "warning" : "info";
+    const title =
+      ar.overdueCount === 1
+        ? `1 facture en retard de ${ar.oldestOverdueDays} jour${ar.oldestOverdueDays > 1 ? "s" : ""}`
+        : `${ar.overdueCount} factures en retard, dont la plus ancienne ${ar.oldestOverdueDays} jour${ar.oldestOverdueDays > 1 ? "s" : ""}`;
+    insights.push(
+      makeInsight({
+        company_id: companyId,
+        level,
+        type: "payment_delay" as AlertType,
+        title,
+        facts: {
+          overdue_count: ar.overdueCount,
+          overdue_ar_cents: ar.overdueARCents,
+          oldest_overdue_days: ar.oldestOverdueDays,
+          total_ar_cents: ar.totalARCents,
+          avg_age_days: ar.avgAgeDays,
         },
       }),
     );

@@ -45,7 +45,10 @@
     - **UI** : page dédiée `/invoices/suggestions` (3 sections distinctes + bouton « Relancer » + timestamp « Dernier rapprochement : il y a X minutes »). Sur `/invoices` : bouton « Annuler match » (Unlink) sur les paid invoices avec matched_transaction_id, qui appelle `unmatchPaid` (reset complet → pending, paid_at=null, matched_*=null, audit=null). Sidebar : entrée « Suggestions » sous « Factures ».
     - **Réversibilité** : `dismissMatch` (clear matched_*, audit ; status pending) pour les suggestions, `unmatchPaid` (reset complet) pour les paid.
     - **Limites V1 assumées** : (i) un dismissMatch peut être re-suggéré au prochain run (engine sans mémoire des refus) ; (ii) les anomalies sont in-memory only, perdues sur refresh ; (iii) auto-trigger silencieux = résultats visibles uniquement en visitant `/invoices/suggestions`.
-  - **Phase 5 (ex-4)** — DSO + alerte impayé sur dashboard (alert_type `payment_delay` déjà prévu dans le schéma initial).
+  - **Phase 5 ✅ (ex-4, livrée 2026-05-09)** — DSO + alerte impayé sur dashboard.
+    - **Engine** `lib/engines/invoice-stats.ts` (pur) : `computeARSummary(invoices, asOf)` retourne `{totalARCents, pendingCount, overdueCount, overdueARCents, avgAgeDays, oldestOverdueDays}`. DSO V1 = âge moyen pondéré par montant des factures pending (intuitif "tes clients te paient en X jours" — formule académique en V2 si on a un chiffre facturé période).
+    - **Decision** : nouveau `evaluateInvoiceInsights(companyId, invoices, asOf)` génère 1 insight `payment_delay` global si overdue > 0 (level critical >60j, warning >30j, info sinon).
+    - **Dashboard** : nouvelle section "Créances clients" (4 KPIs : à encaisser / en retard / DSO moyen / plus vieux retard) + insights `payment_delay` mergés avec ceux du financial state. Les invoices sont chargées en parallèle des transactions au load. Lien "Voir factures →" vers /invoices.
   - **V1.5** — (a) OCR Tesseract pour PDFs scannés (catégorie image-only) ; (b) **fallback LLM Claude Haiku 4.5 + tool_use** pour les formats de factures que le regex ne couvre pas (fournisseurs autres que Dext) ; (c) Excel `.xlsx` natif.
   - **V2** — factur-X (PDF/A-3 + XML embedded), obligation FR 2026/2027.
 

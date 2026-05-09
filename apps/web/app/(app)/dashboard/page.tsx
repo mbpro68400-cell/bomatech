@@ -9,8 +9,10 @@ import {
   getLatestState,
   upsertState,
 } from "@/lib/queries/transactions";
+import { listInvoices } from "@/lib/queries/invoices";
 import { recomputeFull } from "@/lib/engines/financial-state";
-import { evaluateInsights } from "@/lib/engines/decision";
+import { evaluateInsights, evaluateInvoiceInsights } from "@/lib/engines/decision";
+import { computeARSummary, emptyARSummary, type ARSummary } from "@/lib/engines/invoice-stats";
 import type { FinancialState, Insight, Transaction } from "@/lib/engines/types";
 
 function formatEur(cents: number): string {
@@ -30,6 +32,7 @@ export default function DashboardPage() {
   const [state, setState] = useState<FinancialState | null>(null);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [txCount, setTxCount] = useState(0);
+  const [ar, setAr] = useState<ARSummary>(emptyARSummary());
 
   useEffect(() => {
     let cancelled = false;
@@ -41,27 +44,39 @@ export default function DashboardPage() {
         return;
       }
 
-      // Load all transactions, recompute state from scratch
-      const transactions = await listTransactions(companyId, 1000);
+      // Phase 5 : load transactions + invoices in parallel
+      const [transactions, invoices] = await Promise.all([
+        listTransactions(companyId, 1000),
+        listInvoices(companyId, 1000),
+      ]);
       if (cancelled) return;
 
       setTxCount(transactions.length);
 
-      if (transactions.length === 0) {
+      const today = new Date().toISOString().slice(0, 10);
+      const arSummary = computeARSummary(invoices, today);
+      setAr(arSummary);
+
+      if (transactions.length === 0 && invoices.length === 0) {
         setLoading(false);
         return;
       }
 
-      const today = new Date().toISOString().slice(0, 10);
-      const newState = recomputeFull(companyId, transactions, today);
-      const newInsights = evaluateInsights(newState, transactions);
+      // Compute financial state only if we have transactions
+      let newState: FinancialState | null = null;
+      let txInsights: Insight[] = [];
+      if (transactions.length > 0) {
+        newState = recomputeFull(companyId, transactions, today);
+        txInsights = evaluateInsights(newState, transactions);
+        void upsertState(newState);
+      }
 
-      // Cache the computed state in DB (so other queries don't have to recompute)
-      void upsertState(newState);
+      // Phase 5 : invoice-driven insights (payment_delay)
+      const invInsights = evaluateInvoiceInsights(companyId, invoices, today);
 
       if (!cancelled) {
         setState(newState);
-        setInsights(newInsights);
+        setInsights([...txInsights, ...invInsights]);
         setLoading(false);
       }
     }
@@ -158,6 +173,61 @@ export default function DashboardPage() {
           </div>
         </article>
       </div>
+
+      {/* Phase 5 : Créances clients */}
+      {ar.pendingCount > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div className="divider-label" style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+            <span>Créances clients</span>
+            <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+            <a href="/invoices" className="muted" style={{ fontSize: 12, textDecoration: "none", flex: "none" }}>
+              Voir factures →
+            </a>
+          </div>
+          <div className="grid cols-4">
+            <article className="card">
+              <div className="kpi">
+                <div className="kpi-label">À encaisser</div>
+                <div className="kpi-value">{formatEur(ar.totalARCents)}</div>
+                <div className="kpi-sub">
+                  <span className="muted">{ar.pendingCount} facture{ar.pendingCount > 1 ? "s" : ""} en attente</span>
+                </div>
+              </div>
+            </article>
+            <article className="card" style={ar.overdueCount > 0 ? { borderColor: "var(--danger)" } : undefined}>
+              <div className="kpi">
+                <div className="kpi-label">En retard</div>
+                <div className="kpi-value" style={ar.overdueCount > 0 ? { color: "var(--danger)" } : undefined}>
+                  {ar.overdueCount > 0 ? formatEur(ar.overdueARCents) : "—"}
+                </div>
+                <div className="kpi-sub">
+                  <span className="muted">
+                    {ar.overdueCount > 0 ? `${ar.overdueCount} facture${ar.overdueCount > 1 ? "s" : ""}` : "aucun retard"}
+                  </span>
+                </div>
+              </div>
+            </article>
+            <article className="card">
+              <div className="kpi">
+                <div className="kpi-label">DSO moyen</div>
+                <div className="kpi-value">{ar.avgAgeDays} j</div>
+                <div className="kpi-sub">
+                  <span className="muted">âge moyen pondéré</span>
+                </div>
+              </div>
+            </article>
+            <article className="card">
+              <div className="kpi">
+                <div className="kpi-label">Plus vieux retard</div>
+                <div className="kpi-value">{ar.oldestOverdueDays > 0 ? `${ar.oldestOverdueDays} j` : "—"}</div>
+                <div className="kpi-sub">
+                  <span className="muted">{ar.oldestOverdueDays > 60 ? "critique" : ar.oldestOverdueDays > 30 ? "à relancer" : "OK"}</span>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      )}
 
       {/* Cashflow */}
       <div style={{ marginTop: 16 }}>
