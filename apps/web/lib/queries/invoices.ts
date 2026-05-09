@@ -356,6 +356,47 @@ export async function dismissMatch(invoiceId: string): Promise<{ ok: boolean; er
   return { ok: !error, error: error?.message ?? null };
 }
 
+/**
+ * Phase 6 : rapprochement manuel multi-factures (1 transaction → N factures).
+ *
+ * V1 SCOPE NOTICE
+ * ----------------
+ * V1 toujours 1 facture ↔ 1 transaction au sens audit (matched_transaction_id
+ * sur invoices). Mais on supporte N invoices pointant vers la MÊME transaction
+ * (cas réel : 1 virement consolidé qui paye plusieurs factures).
+ *
+ * À l'inverse (1 facture ↔ N transactions = paiement partiel/échelonné), c'est
+ * V2 via la table invoice_payments (voir migration 0002 + ROADMAP).
+ *
+ * Les N factures cochées passent toutes status='paid', matched_by='manual',
+ * matched_transaction_id=tx.id, match_confidence=1.0. La validation de
+ * l'écart (±1 %) est faite côté UI avant l'appel.
+ */
+export async function applyManualMultiMatch(
+  invoiceIds: string[],
+  transactionId: string,
+  userId: string | null,
+  paidAt: string,
+): Promise<{ updated: number; error: string | null }> {
+  if (invoiceIds.length === 0) return { updated: 0, error: null };
+  const supabase = getBrowserClient();
+  const { data, error } = await supabase
+    .from("invoices_emitted")
+    .update({
+      status: "paid" as const,
+      paid_at: paidAt,
+      matched_transaction_id: transactionId,
+      match_confidence: 1.0,
+      matched_at: new Date().toISOString(),
+      matched_by: "manual",
+      matched_user_id: userId,
+    })
+    .in("id", invoiceIds)
+    .select("id");
+  if (error) return { updated: 0, error: error.message };
+  return { updated: (data ?? []).length, error: null };
+}
+
 /** User undoes an applied match on a paid invoice : full reset to pending. */
 export async function unmatchPaid(invoiceId: string): Promise<{ ok: boolean; error: string | null }> {
   const supabase = getBrowserClient();

@@ -163,6 +163,9 @@ export default function SuggestionsPage() {
           <Link href="/invoices" className="btn ghost sm" style={{ textDecoration: "none" }}>
             <ArrowLeft size={14} strokeWidth={1.7} /> Factures
           </Link>
+          <Link href="/invoices/match-manual" className="btn ghost sm" style={{ textDecoration: "none" }}>
+            Manuel (multi)
+          </Link>
           <button type="button" className="btn primary sm" onClick={relaunch} disabled={running}>
             {running ? <Loader2 size={14} strokeWidth={1.7} className="spin" /> : <Link2 size={14} strokeWidth={1.7} />}
             {running ? "Rapprochement…" : "Relancer le rapprochement"}

@@ -45,6 +45,14 @@
     - **UI** : page dédiée `/invoices/suggestions` (3 sections distinctes + bouton « Relancer » + timestamp « Dernier rapprochement : il y a X minutes »). Sur `/invoices` : bouton « Annuler match » (Unlink) sur les paid invoices avec matched_transaction_id, qui appelle `unmatchPaid` (reset complet → pending, paid_at=null, matched_*=null, audit=null). Sidebar : entrée « Suggestions » sous « Factures ».
     - **Réversibilité** : `dismissMatch` (clear matched_*, audit ; status pending) pour les suggestions, `unmatchPaid` (reset complet) pour les paid.
     - **Limites V1 assumées** : (i) un dismissMatch peut être re-suggéré au prochain run (engine sans mémoire des refus) ; (ii) les anomalies sont in-memory only, perdues sur refresh ; (iii) auto-trigger silencieux = résultats visibles uniquement en visitant `/invoices/suggestions`.
+  - **Phase 6 ✅ (livrée 2026-05-09)** — rapprochement manuel multi-factures.
+    - Cas réel : 1 virement consolidé qui paye N factures (BTP/services). L'auto-match V1 ne couvre que 1↔1, donc ces cas tombaient en "no_candidate" silencieusement.
+    - Nouvelle page `/invoices/match-manual` avec UI 2 colonnes : transactions revenue non-attribuées (radio, 1) / factures pending non-attribuées (checkboxes, N).
+    - Status bar live : Σ factures cochées · Montant tx · Écart en € et %.
+    - Bouton "Valider" actif uniquement si écart ≤ 1 % (même tolérance que l'auto-match).
+    - Au submit : N factures `status='paid'`, `matched_transaction_id=tx.id`, `matched_by='manual'`, `matched_user_id=user.id`, `match_confidence=1.0`, `paid_at=tx.date`. Schéma compatible (pas de unique sur matched_transaction_id).
+    - Lien depuis `/invoices/suggestions` ("Manuel (multi)") et inversement.
+    - **NB** : l'inverse (1 facture ↔ N transactions = paiement échelonné) reste V2 via `invoice_payments`. La V1 actuelle suppose qu'une facture ne se paye qu'en une fois.
   - **Phase 5 ✅ (ex-4, livrée 2026-05-09)** — DSO + alerte impayé sur dashboard.
     - **Engine** `lib/engines/invoice-stats.ts` (pur) : `computeARSummary(invoices, asOf)` retourne `{totalARCents, pendingCount, overdueCount, overdueARCents, avgAgeDays, oldestOverdueDays}`. DSO V1 = âge moyen pondéré par montant des factures pending (intuitif "tes clients te paient en X jours" — formule académique en V2 si on a un chiffre facturé période).
     - **Decision** : nouveau `evaluateInvoiceInsights(companyId, invoices, asOf)` génère 1 insight `payment_delay` global si overdue > 0 (level critical >60j, warning >30j, info sinon).
