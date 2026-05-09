@@ -51,6 +51,11 @@ export default function PeriodsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [showModal, setShowModal] = useState(false);
+  // Phase 1.7.1 fix Bug 3 : cooldown du bouton "Clôturer" après succès,
+  // pour éviter qu'un user re-clique parce qu'il n'a pas vu de feedback.
+  const [recentClosureAt, setRecentClosureAt] = useState<Date | null>(null);
+  const [, setTick] = useState(0);
+  const isInCooldown = recentClosureAt != null && Date.now() - recentClosureAt.getTime() < 10_000;
 
   async function refresh(cid: string) {
     const [p, cs, txs, invs] = await Promise.all([
@@ -77,6 +82,14 @@ export default function PeriodsPage() {
     void load();
     return () => { cancelled = true; };
   }, []);
+
+  // Tick chaque seconde pendant le cooldown pour réévaluer isInCooldown
+  useEffect(() => {
+    if (!recentClosureAt) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    const timeout = setTimeout(() => setRecentClosureAt(null), 10_000);
+    return () => { clearInterval(id); clearTimeout(timeout); };
+  }, [recentClosureAt]);
 
   if (loading) {
     return (
@@ -105,8 +118,18 @@ export default function PeriodsPage() {
           </p>
         </div>
         <div className="actions">
-          <button type="button" className="btn primary sm" onClick={() => setShowModal(true)}>
-            <Lock size={14} strokeWidth={1.7} /> Clôturer la période
+          <button
+            type="button"
+            className="btn primary sm"
+            onClick={() => setShowModal(true)}
+            disabled={isInCooldown}
+            title={isInCooldown ? "Clôture validée à l'instant — patiente quelques secondes" : undefined}
+          >
+            {isInCooldown ? (
+              <><CheckCircle2 size={14} strokeWidth={1.7} /> Clôture validée ✓</>
+            ) : (
+              <><Lock size={14} strokeWidth={1.7} /> Clôturer la période</>
+            )}
           </button>
         </div>
       </header>
@@ -178,6 +201,7 @@ export default function PeriodsPage() {
           onClose={() => setShowModal(false)}
           onConfirmed={async () => {
             setShowModal(false);
+            setRecentClosureAt(new Date());
             if (companyId) await refresh(companyId);
           }}
         />
@@ -208,17 +232,33 @@ function CloseModal({
   onClose: () => void;
   onConfirmed: () => Promise<void>;
 }) {
+  // Phase 1.7.1 : 2 modes de modal selon company.current_period_start.
+  //   * 1ère clôture (current_period_start === null) : 2 inputs date (start + end)
+  //   * Clôtures suivantes : période courante en lecture seule + 1 input date (end)
+  const isFirstClosure = period?.current_period_start == null;
+
+  // Default sensé pour periodStart en mode 1ère clôture : la date de la
+  // plus ancienne transaction de la company (ou today si aucune).
+  const defaultPeriodStart = useMemo(() => {
+    if (transactions.length === 0) return todayIso();
+    return transactions.map((t) => t.date).sort()[0];
+  }, [transactions]);
+
+  const [periodStart, setPeriodStart] = useState<string>(
+    period?.current_period_start ?? defaultPeriodStart,
+  );
   const [periodEnd, setPeriodEnd] = useState<string>(todayIso());
   const [notes, setNotes] = useState<string>("");
   const [confirmText, setConfirmText] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string>("");
 
-  const minDate = period?.current_period_start ?? "1900-01-01";
   const today = todayIso();
+  // En mode "clôtures suivantes", periodStart est verrouillé à current_period_start.
+  const effectivePeriodStart = isFirstClosure ? periodStart : (period!.current_period_start as string);
 
-  // Calcul local du diff cash/runway pré vs post (sans toucher la DB).
-  // recomputeFull est pure → on simule.
+  // Calcul local du diff cash/runway pré vs post (sans toucher la DB). Pure.
   const diff = useMemo(() => {
     const before = recomputeFull(companyId, transactions, today);
     const futureTx = transactions.filter((t) => t.date > periodEnd);
@@ -226,36 +266,43 @@ function CloseModal({
     return { before, after };
   }, [companyId, transactions, periodEnd, today]);
 
-  // Compte les écritures qui basculeraient en archived
   const txArchivedCount = transactions.filter((t) => t.date <= periodEnd).length;
   const invoicesArchivedCount = invoices.filter((i) => i.issued_at <= periodEnd).length;
 
-  const dateValid = periodEnd >= minDate;
+  const dateValid = effectivePeriodStart <= periodEnd && periodEnd <= today;
   const confirmValid = confirmText.trim().toUpperCase() === "CLOTURER";
-  const canSubmit = dateValid && confirmValid && !submitting;
+  const canSubmit = dateValid && confirmValid && !submitting && !success;
 
   async function submit() {
     if (!canSubmit) return;
     setSubmitting(true);
     setError("");
-    const { ok, error: errMsg } = await closePeriod(companyId, periodEnd, notes.trim() || undefined);
+
+    // Mode 1ère clôture : on passe p_period_start à la RPC (la v2 le requiert).
+    // Sinon : on laisse la RPC dériver depuis company.current_period_start.
+    const { ok, error: errMsg } = await closePeriod(
+      companyId,
+      periodEnd,
+      notes.trim() || undefined,
+      isFirstClosure ? periodStart : undefined,
+    );
     setSubmitting(false);
     if (!ok || errMsg) {
       setError(errMsg ?? "Erreur inconnue");
       return;
     }
-    await onConfirmed();
-    // Force a UI refresh so the dashboard banner + KPIs reflect the new period state.
-    if (typeof window !== "undefined") {
-      // Soft reload : router.refresh() ne re-fetch pas les data côté client ici,
-      // un reload complet est plus sûr post-clôture (engines + caches React).
-      setTimeout(() => window.location.reload(), 100);
-    }
+
+    // Phase 1.7.1 fix Bug 3 : overlay succès distinct AVANT de fermer la modal.
+    // L'utilisateur voit explicitement "OK ça a marché" avant que la modal disparaisse.
+    setSuccess(true);
+    setTimeout(async () => {
+      await onConfirmed();
+    }, 2500);
   }
 
   return (
     <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !submitting && !success) onClose(); }}
       style={{
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -263,125 +310,196 @@ function CloseModal({
       }}
     >
       <div className="card" style={{ maxWidth: 640, width: "100%", maxHeight: "90vh", overflowY: "auto" }}>
-        <header className="card-head">
-          <div className="card-title">Clôturer la période comptable</div>
-          <button type="button" className="btn ghost sm" onClick={onClose} style={{ marginLeft: "auto" }}>
-            <X size={14} strokeWidth={1.7} />
-          </button>
-        </header>
-        <div className="card-body" style={{ padding: 18 }}>
-          <div style={{ padding: 12, background: "var(--warning-soft)", borderRadius: 6, marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 10 }}>
-            <AlertTriangle size={18} strokeWidth={1.7} color="var(--warning)" />
-            <div style={{ fontSize: 13 }}>
-              <strong>Action irréversible en V1.</strong>{" "}
-              Une fois clôturée, les écritures avec date ≤ date de fin deviennent <strong>lecture seule</strong> (modifications/suppressions interdites au niveau base de données). La V2 prévoit la réouverture documentée.
-            </div>
+        {success ? (
+          // ============ Phase 1.7.1 fix Bug 3 — overlay succès ============
+          <div style={{ padding: 48, textAlign: "center" }}>
+            <CheckCircle2 size={56} strokeWidth={1.5} color="var(--success)" style={{ margin: "0 auto 16px" }} />
+            <h2 className="serif" style={{ fontSize: 22, margin: "0 0 8px", letterSpacing: "-0.02em" }}>
+              Période clôturée avec succès
+            </h2>
+            <p style={{ fontSize: 15, margin: "0 0 8px" }}>
+              du <strong>{formatDateFr(effectivePeriodStart)}</strong> au <strong>{formatDateFr(periodEnd)}</strong>
+            </p>
+            <p className="muted" style={{ fontSize: 13, margin: "0 0 16px" }}>
+              {txArchivedCount} transaction{txArchivedCount > 1 ? "s" : ""} et {invoicesArchivedCount} facture{invoicesArchivedCount > 1 ? "s" : ""} archivée{invoicesArchivedCount > 1 ? "s" : ""}.
+            </p>
+            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+              <Loader2 size={14} strokeWidth={1.7} className="spin" style={{ verticalAlign: "middle", marginRight: 6 }} />
+              Rafraîchissement des données…
+            </p>
+            <style jsx>{`
+              .spin { animation: spin 1s linear infinite; display: inline-block; }
+              @keyframes spin { to { transform: rotate(360deg); } }
+            `}</style>
           </div>
+        ) : (
+          <>
+            <header className="card-head">
+              <div className="card-title">
+                {isFirstClosure ? "Première clôture comptable" : "Clôturer la période comptable"}
+              </div>
+              <button type="button" className="btn ghost sm" onClick={onClose} disabled={submitting} style={{ marginLeft: "auto" }}>
+                <X size={14} strokeWidth={1.7} />
+              </button>
+            </header>
+            <div className="card-body" style={{ padding: 18 }}>
+              <div style={{ padding: 12, background: "var(--warning-soft)", borderRadius: 6, marginBottom: 16, display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <AlertTriangle size={18} strokeWidth={1.7} color="var(--warning)" />
+                <div style={{ fontSize: 13 }}>
+                  <strong>Action irréversible en V1.</strong>{" "}
+                  Une fois clôturée, les écritures avec date ≤ date de fin deviennent <strong>lecture seule</strong> (modifications/suppressions interdites au niveau base de données). La V2 prévoit la réouverture documentée.
+                </div>
+              </div>
 
-          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>Date de fin de période *</span>
-              <input
-                type="date"
-                name="period_end"
-                value={periodEnd}
-                min={minDate}
-                max={today}
-                onChange={(e) => setPeriodEnd(e.target.value)}
-                style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
-              />
-              {!dateValid && (
-                <span style={{ fontSize: 11, color: "var(--danger)" }}>
-                  Doit être ≥ début de la période courante ({formatDateFr(minDate)})
-                </span>
+              {/* Période courante en lecture seule (mode clôtures suivantes) */}
+              {!isFirstClosure && (
+                <div style={{ marginBottom: 16, padding: 12, background: "var(--surface-sunken)", borderRadius: 6, fontSize: 13 }}>
+                  <span className="muted">Période courante :</span>{" "}
+                  depuis le <strong>{formatDateFr(period!.current_period_start)}</strong>
+                </div>
               )}
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>Notes (optionnelles)</span>
-              <input
-                type="text"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="ex: clôture exercice 2025"
-                maxLength={200}
-                style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
-              />
-            </label>
-          </div>
 
-          <div style={{ marginBottom: 16, padding: 12, background: "var(--surface-sunken)", borderRadius: 6 }}>
-            <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 8 }}>
-              Impact sur les écritures (à la confirmation) :
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 13 }}>
-              <div>
-                <span className="muted">Transactions à archiver :</span>{" "}
-                <strong>{txArchivedCount}</strong> / {transactions.length}
+              <div style={{ display: "grid", gap: 12, gridTemplateColumns: isFirstClosure ? "1fr 1fr" : "1fr 1fr", marginBottom: 16 }}>
+                {isFirstClosure ? (
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+                      Date de <strong>début</strong> de période *
+                    </span>
+                    <input
+                      type="date"
+                      name="period_start"
+                      value={periodStart}
+                      max={periodEnd}
+                      onChange={(e) => setPeriodStart(e.target.value)}
+                      style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
+                    />
+                    <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>
+                      1ère clôture : saisis explicitement le début (par défaut, la plus ancienne transaction).
+                    </span>
+                  </label>
+                ) : (
+                  <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>Notes (optionnelles)</span>
+                    <input
+                      type="text"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="ex: clôture exercice 2025"
+                      maxLength={200}
+                      style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
+                    />
+                  </label>
+                )}
+
+                <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+                    Date de <strong>fin</strong> de période *
+                  </span>
+                  <input
+                    type="date"
+                    name="period_end"
+                    value={periodEnd}
+                    min={effectivePeriodStart}
+                    max={today}
+                    onChange={(e) => setPeriodEnd(e.target.value)}
+                    style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
+                  />
+                  {!dateValid && (
+                    <span style={{ fontSize: 11, color: "var(--danger)" }}>
+                      La fin doit être ≥ début ({formatDateFr(effectivePeriodStart)}) et ≤ aujourd'hui.
+                    </span>
+                  )}
+                </label>
               </div>
-              <div>
-                <span className="muted">Factures à archiver :</span>{" "}
-                <strong>{invoicesArchivedCount}</strong> / {invoices.length}
+
+              {/* Notes en mode 1ère clôture (pleine largeur) */}
+              {isFirstClosure && (
+                <label style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>
+                  <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>Notes (optionnelles)</span>
+                  <input
+                    type="text"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="ex: clôture exercice 2024"
+                    maxLength={200}
+                    style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
+                  />
+                </label>
+              )}
+
+              {/* ============ Phase 1.7.1 fix Bug 1 — preview FR longue ============ */}
+              <div style={{ marginBottom: 16, padding: 14, background: "var(--accent-soft, rgba(99,102,241,0.08))", borderRadius: 6, borderLeft: "3px solid var(--accent)" }}>
+                <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 6 }}>
+                  ▶ Vous allez clôturer la période :
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 8 }}>
+                  du <span style={{ color: "var(--accent)" }}>{formatDateFr(effectivePeriodStart)}</span>
+                  {" "}au <span style={{ color: "var(--accent)" }}>{formatDateFr(periodEnd)}</span>
+                </div>
+                <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>
+                  ▶ Cette action archivera <strong>{txArchivedCount}</strong> transaction{txArchivedCount > 1 ? "s" : ""} et <strong>{invoicesArchivedCount}</strong> facture{invoicesArchivedCount > 1 ? "s" : ""} (lecture seule).
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 16, padding: 12, background: "var(--surface-sunken)", borderRadius: 6 }}>
+                <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 8 }}>
+                  Impact sur les KPIs dashboard (simulation locale) :
+                </div>
+                <table className="table" style={{ fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>Avant</th>
+                      <th>Après</th>
+                      <th>Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <DiffRow label="Trésorerie" beforeCents={diff.before.cash_cents} afterCents={diff.after.cash_cents} />
+                    <DiffRow label="Revenus 30j" beforeCents={diff.before.revenue_30d} afterCents={diff.after.revenue_30d} />
+                    <DiffRow label="Revenus 90j" beforeCents={diff.before.revenue_90d} afterCents={diff.after.revenue_90d} />
+                    <RunwayRow before={diff.before.runway_months} after={diff.after.runway_months} />
+                  </tbody>
+                </table>
+                <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+                  Les KPIs ne refléteront que la <strong>période courante</strong> (depuis {formatDateFr(periodEnd)} +1 jour). Archives consultables dans <a href="/archives" style={{ textDecoration: "underline" }}>Archives</a>.
+                </div>
+              </div>
+
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>
+                <span style={{ fontSize: 13 }}>
+                  Pour confirmer, recopie le mot <strong style={{ fontFamily: "var(--font-mono)" }}>CLOTURER</strong> :
+                </span>
+                <input
+                  type="text"
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder="CLOTURER"
+                  style={{ padding: "8px 10px", border: `1px solid ${confirmValid ? "var(--success)" : "var(--border)"}`, borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
+                />
+              </label>
+
+              {error && (
+                <div style={{ padding: 10, background: "var(--danger-soft, rgba(220,38,38,0.1))", color: "var(--danger)", borderRadius: 6, fontSize: 13, marginBottom: 12 }}>
+                  {error}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button type="button" className="btn ghost" onClick={onClose} disabled={submitting}>
+                  Annuler
+                </button>
+                <button type="button" className="btn primary" onClick={submit} disabled={!canSubmit}>
+                  {submitting ? <><Loader2 size={14} strokeWidth={1.7} className="spin" /> Clôture en cours…</> : <><Lock size={14} strokeWidth={1.7} /> Confirmer la clôture</>}
+                </button>
               </div>
             </div>
-          </div>
-
-          <div style={{ marginBottom: 16, padding: 12, background: "var(--surface-sunken)", borderRadius: 6 }}>
-            <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 8 }}>
-              Impact sur les KPIs dashboard (simulation) :
-            </div>
-            <table className="table" style={{ fontSize: 13 }}>
-              <thead>
-                <tr>
-                  <th></th>
-                  <th>Avant</th>
-                  <th>Après</th>
-                  <th>Δ</th>
-                </tr>
-              </thead>
-              <tbody>
-                <DiffRow label="Trésorerie" beforeCents={diff.before.cash_cents} afterCents={diff.after.cash_cents} />
-                <DiffRow label="Revenus 30j" beforeCents={diff.before.revenue_30d} afterCents={diff.after.revenue_30d} />
-                <DiffRow label="Revenus 90j" beforeCents={diff.before.revenue_90d} afterCents={diff.after.revenue_90d} />
-                <RunwayRow before={diff.before.runway_months} after={diff.after.runway_months} />
-              </tbody>
-            </table>
-            <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
-              Les KPIs reflèteront la <strong>période courante</strong> (depuis le {formatDateFr(periodEnd)} +1 jour). Les écritures archivées resteront consultables dans <a href="/archives" style={{ textDecoration: "underline" }}>Archives</a>.
-            </div>
-          </div>
-
-          <label style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>
-            <span style={{ fontSize: 13 }}>
-              Pour confirmer, recopie le mot <strong style={{ fontFamily: "var(--font-mono)" }}>CLOTURER</strong> :
-            </span>
-            <input
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="CLOTURER"
-              style={{ padding: "8px 10px", border: `1px solid ${confirmValid ? "var(--success)" : "var(--border)"}`, borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
-            />
-          </label>
-
-          {error && (
-            <div style={{ padding: 10, background: "var(--danger-soft, rgba(220,38,38,0.1))", color: "var(--danger)", borderRadius: 6, fontSize: 13, marginBottom: 12 }}>
-              {error}
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button type="button" className="btn ghost" onClick={onClose} disabled={submitting}>
-              Annuler
-            </button>
-            <button type="button" className="btn primary" onClick={submit} disabled={!canSubmit}>
-              {submitting ? <><Loader2 size={14} strokeWidth={1.7} className="spin" /> Clôture en cours…</> : <><Lock size={14} strokeWidth={1.7} /> Confirmer la clôture</>}
-            </button>
-          </div>
-        </div>
-        <style jsx>{`
-          .spin { animation: spin 1s linear infinite; }
-          @keyframes spin { to { transform: rotate(360deg); } }
-        `}</style>
+            <style jsx>{`
+              .spin { animation: spin 1s linear infinite; }
+              @keyframes spin { to { transform: rotate(360deg); } }
+            `}</style>
+          </>
+        )}
       </div>
     </div>
   );

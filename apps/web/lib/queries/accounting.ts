@@ -94,15 +94,23 @@ export async function closePeriod(
   companyId: string,
   periodEnd: string, // ISO YYYY-MM-DD
   notes?: string,
+  periodStart?: string, // ISO YYYY-MM-DD — required for first closure (when company.current_period_start is NULL)
 ): Promise<CloseResult> {
   const supabase = getBrowserClient();
 
   // Step 1 — atomic RPC call (transactional in PL/pgSQL).
-  const { data, error } = await supabase.rpc("close_period", {
+  // p_period_start is optional : the RPC v2 (migration 0005) resolves to
+  // company.current_period_start if not supplied. For the first closure
+  // (current_period_start === null), the caller MUST pass periodStart.
+  const rpcArgs: Record<string, string | null> = {
     p_company_id: companyId,
     p_period_end: periodEnd,
     p_notes: notes ?? null,
-  });
+  };
+  if (periodStart) {
+    rpcArgs.p_period_start = periodStart;
+  }
+  const { data, error } = await supabase.rpc("close_period", rpcArgs);
   if (error) {
     return { ok: false, closure: null, error: error.message };
   }
