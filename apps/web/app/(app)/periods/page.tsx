@@ -43,6 +43,12 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function addOneDayIso(iso: string): string {
+  const d = new Date(iso);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function PeriodsPage() {
   const [loading, setLoading] = useState(true);
   const [companyId, setCompanyId] = useState<string | null>(null);
@@ -374,7 +380,7 @@ function CloseModal({
                       style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
                     />
                     <span style={{ fontSize: 11, color: "var(--fg-muted)" }}>
-                      1ère clôture : saisis explicitement le début (par défaut, la plus ancienne transaction).
+                      Date de début de l'exercice (informatif, n'affecte pas l'archivage). Default = plus ancienne transaction.
                     </span>
                   </label>
                 ) : (
@@ -427,17 +433,18 @@ function CloseModal({
                 </label>
               )}
 
-              {/* ============ Phase 1.7.1 fix Bug 1 — preview FR longue ============ */}
+              {/* ============ Phase 1.7.1 fix Bug 1 — preview FR longue (cumulative) ============ */}
               <div style={{ marginBottom: 16, padding: 14, background: "var(--accent-soft, rgba(99,102,241,0.08))", borderRadius: 6, borderLeft: "3px solid var(--accent)" }}>
-                <div style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 6 }}>
-                  ▶ Vous allez clôturer la période :
+                <div style={{ fontSize: 14, marginBottom: 10 }}>
+                  ▶ Vous allez clôturer la période{" "}
+                  <strong>du {formatDateFr(effectivePeriodStart)} au {formatDateFr(periodEnd)}</strong>.
                 </div>
-                <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 8 }}>
-                  du <span style={{ color: "var(--accent)" }}>{formatDateFr(effectivePeriodStart)}</span>
-                  {" "}au <span style={{ color: "var(--accent)" }}>{formatDateFr(periodEnd)}</span>
+                <div style={{ fontSize: 13, marginBottom: 8 }}>
+                  ▶ Cette action archivera <strong>{txArchivedCount} transaction{txArchivedCount > 1 ? "s" : ""}</strong> et <strong>{invoicesArchivedCount} facture{invoicesArchivedCount > 1 ? "s" : ""}</strong> :{" "}
+                  toutes les écritures datées <strong>au plus tard au {formatDateFr(periodEnd)}</strong>.
                 </div>
                 <div style={{ fontSize: 13, color: "var(--fg-muted)" }}>
-                  ▶ Cette action archivera <strong>{txArchivedCount}</strong> transaction{txArchivedCount > 1 ? "s" : ""} et <strong>{invoicesArchivedCount}</strong> facture{invoicesArchivedCount > 1 ? "s" : ""} (lecture seule).
+                  ▶ Les écritures à partir du <strong>{formatDateFr(addOneDayIso(periodEnd))}</strong> resteront dans la période courante.
                 </div>
               </div>
 
