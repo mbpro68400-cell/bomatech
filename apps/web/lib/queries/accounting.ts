@@ -97,18 +97,6 @@ export async function closePeriod(
 ): Promise<CloseResult> {
   const supabase = getBrowserClient();
 
-  // [DIAG-1.7.1] Instrumentation temporaire (Bug 1 — parsing de date).
-  // À retirer une fois le diagnostic confirmé. Voir ROADMAP 1.7.1.
-  // eslint-disable-next-line no-console
-  console.log("[DIAG closePeriod() before supabase.rpc]", {
-    companyId,
-    periodEnd,
-    periodEndType: typeof periodEnd,
-    periodEndLength: periodEnd?.length,
-    periodEndCodepoints: periodEnd ? Array.from(periodEnd).map((c) => c.charCodeAt(0)).join(",") : null,
-    notes,
-  });
-
   // Step 1 — atomic RPC call (transactional in PL/pgSQL).
   const { data, error } = await supabase.rpc("close_period", {
     p_company_id: companyId,

@@ -238,15 +238,6 @@ function CloseModal({
     if (!canSubmit) return;
     setSubmitting(true);
     setError("");
-    // [DIAG-1.7.1] Instrumentation temporaire (Bug 1 — parsing de date).
-    // À retirer une fois le diagnostic confirmé. Voir ROADMAP 1.7.1.
-    // eslint-disable-next-line no-console
-    console.log("[DIAG submit() before RPC]", {
-      periodEndStateValue: periodEnd,
-      periodEndType: typeof periodEnd,
-      notes: notes.trim() || null,
-      companyId,
-    });
     const { ok, error: errMsg } = await closePeriod(companyId, periodEnd, notes.trim() || undefined);
     setSubmitting(false);
     if (!ok || errMsg) {
@@ -296,18 +287,7 @@ function CloseModal({
                 value={periodEnd}
                 min={minDate}
                 max={today}
-                onChange={(e) => {
-                  // [DIAG-1.7.1] Instrumentation temporaire (Bug 1 — parsing de date).
-                  // À retirer une fois le diagnostic confirmé. Voir ROADMAP 1.7.1.
-                  // eslint-disable-next-line no-console
-                  console.log("[DIAG period_end onChange]", {
-                    inputName: e.target.name,
-                    inputValue: e.target.value,
-                    inputValueType: typeof e.target.value,
-                    inputValueAsDate: e.target.valueAsDate?.toISOString() ?? null,
-                  });
-                  setPeriodEnd(e.target.value);
-                }}
+                onChange={(e) => setPeriodEnd(e.target.value)}
                 style={{ padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", color: "var(--fg)", font: "inherit" }}
               />
               {!dateValid && (
