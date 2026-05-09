@@ -67,6 +67,7 @@ export async function parseInvoicePdf(file: File): Promise<ParseInvoicePdfResult
   const client_name = extractClient(flat);
   const issued_at = extractDate(flat, [
     /date\s+d[''′]?[ée]mission\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
+    /date\s+de\s+facturation\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i, // Dext variant: "Date de facturation"
     /date\s+facture\s*[:\s]\s*(\d{2}\/\d{2}\/\d{4})/i,
     /facture\s+du\s+(\d{2}\/\d{2}\/\d{4})/i,
     /[ée]mise\s+le\s+(\d{2}\/\d{2}\/\d{4})/i,
@@ -140,31 +141,35 @@ function extractClient(text: string): string | null {
   // le bloc en MAJUSCULES (au moins 3 chars, ALL CAPS — accents inclus) qui précède
   // une adresse "X rue|avenue|...". Strictement majuscule pour éviter de capturer
   // l'article "la" / "le" / "à" depuis le texte courant.
-  const STREET_KW = "(?:rue|avenue|av\\.|boulevard|bd\\.|chemin|impasse|all[ée]e|place|square|cours|route|rte\\.|quai|esplanade|voie|passage|sentier)";
+  // STREET_KW : accepte aussi la première lettre en majuscule (ex: "Rue", "Avenue")
+  const STREET_KW = "(?:[Rr]ue|[Aa]venue|[Aa]v\\.|[Bb]oulevard|[Bb]d\\.|[Cc]hemin|[Ii]mpasse|[Aa]ll[ée]e|[Pp]lace|[Ss]quare|[Cc]ours|[Rr]oute|[Rr]te\\.|[Qq]uai|[Ee]splanade|[Vv]oie|[Pp]assage|[Ss]entier)";
   const UC = "A-ZÀ-ÖØ-Þ"; // uppercase Latin + accents (U+00C0..U+00D6, U+00D8..U+00DE)
+  // Body chars : 1ère lettre uppercase, suite mixed case (pour "SCI Houston", "Ixina Wittenheim", etc.).
+  // Pas de flag `i` pour ne PAS laisser passer "la", "le", "à" en début de capture.
+  const NAME_BODY = "A-Za-zÀ-ÿ0-9 \\-&'.";
 
   // Pattern primaire : ancré sur "À régler/payer avant le DATE." → CLIENT + adresse
   const afterDueLabel = text.match(
     new RegExp(
-      `[Àà]\\s+(?:r[ée]gler|payer)\\s+(?:avant\\s+)?(?:le\\s+)?\\d{2}\\/\\d{2}\\/\\d{4}[\\s.]+([${UC}][${UC}0-9 \\-&'.]{2,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
-      "iu",
+      `[Àà]\\s+(?:r[ée]gler|payer)\\s+(?:avant\\s+)?(?:le\\s+)?\\d{2}\\/\\d{2}\\/\\d{4}[\\s.]+([${UC}][${NAME_BODY}]{3,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+      "u",
     ),
   );
   if (afterDueLabel && afterDueLabel[1]) {
     const candidate = cleanLine(afterDueLabel[1]);
-    if (candidate.length >= 3 && !/^bomatech$/i.test(candidate)) return candidate;
+    if (candidate.length >= 4 && !/^bomatech$/i.test(candidate)) return candidate;
   }
 
-  // Fallback : 1er nom ALL-CAPS suivi d'une adresse, en excluant l'émetteur (Bomatech)
+  // Fallback : 1er nom (1ère majuscule, suite mixed) suivi d'une adresse, en excluant Bomatech
   const candidatesRe = new RegExp(
-    `\\b([${UC}][${UC}0-9 \\-&'.]{2,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
+    `\\b([${UC}][${NAME_BODY}]{3,60}?)\\s+\\d{1,4}\\s+${STREET_KW}\\b`,
     "gu",
   );
   const matches = [...text.matchAll(candidatesRe)];
   for (const m of matches) {
     const candidate = cleanLine(m[1]).replace(/[,;]+$/, "").trim();
     if (!candidate || /^bomatech$/i.test(candidate)) continue;
-    if (candidate.length < 3) continue;
+    if (candidate.length < 4) continue;
     return candidate;
   }
   return null;
@@ -191,7 +196,7 @@ interface ExtractedAmounts {
 function extractAmounts(text: string): ExtractedAmounts {
   // Sous-total (HT)
   let ht: number | null = null;
-  const htMatch = text.match(/sous[\s-]?total\s*[:]?\s*([\d  .,\s]+?)\s*€/i)
+  const htMatch = text.match(/sous[\s-]?total\s*(?:\(\s*ht\s*\))?\s*[:]?\s*([\d  .,\s]+?)\s*€/i)
     ?? text.match(/total\s+ht\s*[:]?\s*([\d  .,\s]+?)\s*€/i)
     ?? text.match(/montant\s+ht\s*[:]?\s*([\d  .,\s]+?)\s*€/i);
   if (htMatch) ht = toCents(htMatch[1]);
@@ -214,7 +219,7 @@ function extractAmounts(text: string): ExtractedAmounts {
   // Total (TTC) — prend la dernière occurrence pour éviter de matcher "Sous-total"
   let ttc: number | null = null;
   // First try explicit labels
-  const explicitTtc = text.match(/(?:total\s+ttc|net\s+[àa]\s+payer|montant\s+ttc)\s*[:]?\s*([\d  .,\s]+?)\s*€/i);
+  const explicitTtc = text.match(/(?:total\s*\(\s*ttc\s*\)|total\s+ttc|net\s+[àa]\s+payer|montant\s+ttc)\s*[:]?\s*([\d  .,\s]+?)\s*€/i);
   if (explicitTtc) {
     ttc = toCents(explicitTtc[1]);
   } else {
