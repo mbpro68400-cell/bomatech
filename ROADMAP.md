@@ -76,7 +76,15 @@
   - **Limites assumées (inchangées)** : (a) action de clôture toujours irréversible en V1 ; (b) pas de protection serveur contre les double-clics simultanés (le cooldown UI est best-effort, mais la migration 0004 unique constraint sur `(company_id, period_end)` + la RPC v2 qui raise `period_end < period_start` après le 1er succès couvrent le pire cas) ; (c) pas de soft delete des closures parasites en cas de besoin (manuel via SQL pour l'instant).
 
 ## Next
-- **1.5 (suite) — Pages restantes** : `/insights` (encore en DEMO), `/analytics`, `/simulate`, `/closing`, `/export`, `/settings` (placeholders ou semi-implémentées) à câbler ou supprimer selon priorité.
+
+Priorités V1 réordonnées (2026-05-09) après l'E2E clôture qui a montré que la 1.7 ne sera pas utilisée tant que la 1.8 n'est pas livrée — donc on ne s'arrête pas dessus, on enchaîne sur les features qui apportent de la valeur observable aux premiers users :
+
+1. **1.6.5 — DSO + alertes impayés (enrichissements)** : suite directe de la Phase 5 livrée (`computeARSummary` + KPIs dashboard). Étendre vers : alertes individuelles par facture (pas seulement le KPI global), suggestions de relance contextuelles (1ère relance amiable / mise en demeure / recouvrement), template d'email de relance pré-rempli, historique des relances par facture. Priorité débloquée par 1.7.1.
+2. **Module Quadrimarket — surveillance santé juridique fournisseurs** : vérification + monitoring continu via Pappers (procédures collectives, dépôts de bilan, changements de dirigeants, scoring prédictif). Décidé en mai 2026 comme module DANS Bomatech (pas produit séparé). **Priorité tactique différenciante** vs Pennylane/Tiime qui ne couvrent pas ça.
+3. **Simulations enrichies — coeur de la value proposition** : what-if scenarios paramétrables sur (a) embauche (impact masse salariale + charges + runway), (b) perte client (impact CA + concentration + delta DSO), (c) hausse de prix (impact marge + élasticité estimée), (d) ligne de crédit / découvert (impact trésorerie + coût intérêts). Page `/simulate` à câbler ou refondre pour exposer ces scenarios.
+4. **Connexion DSP2 via Bridge** : import bancaire temps réel via Bridge API (alternative aux imports CSV/PDF manuels du CIC). Permet `cash flow` réellement live sur le dashboard. Bridge est l'agrégateur DSP2 leader en France. Couplage avec la 1.4 actuelle (CSV/PDF restent comme fallback).
+
+5. **1.5 (suite) — Pages restantes** : `/insights` (encore en DEMO), `/analytics`, `/closing`, `/export`, `/settings` (placeholders ou semi-implémentées) à câbler ou supprimer selon priorité. À traiter au fil de l'eau plutôt qu'en bloc.
 
 ## Backlog (non priorisé)
 - **Paiements partiels sur factures (V2)** : nouvelle table `invoice_payments(invoice_id, transaction_id, amount_cents, paid_at)`. Permettra qu'une facture soit liée à plusieurs transactions et qu'on suive un solde restant. Volontairement reporté en V2 pour ne pas alourdir la V1. Voir `database/migrations/0002_invoices_emitted.sql` (notice V1 SCOPE).
@@ -88,7 +96,6 @@
 - **Soft closing mensuelle / trimestrielle (V2)** : permettre de clôturer un mois ou un trimestre sans fermer l'exercice complet. Nécessitera de modéliser plusieurs niveaux de clôture (mensuel / trimestriel / annuel).
 - **Workflow validation expert-comptable externe (V2)** : ajout d'un état "en attente validation" + signature externe par un compte expert-comptable invité.
 - **Génération auto FEC + liasse fiscale au moment de la clôture (V2)** : déclenche un export FEC standardisé + un draft de liasse fiscale au moment du `close_period`.
-- **Module Quadrimarket** (vérification/surveillance santé juridique des fournisseurs via Pappers + scoring prédictif). Décidé en mai 2026 comme module DANS Bomatech, pas produit séparé. À planifier après 1.5/1.6.
 - **Stripe integration** (paiement Pro 29€/mois HT, plan annuel −15%).
 - **Engines API hosting sur Fly.io** (engines Python actuellement en port TS dans `apps/web/lib/engines/`).
 
