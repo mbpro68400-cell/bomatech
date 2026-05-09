@@ -6,6 +6,7 @@
 
 import { getBrowserClient } from "../supabase";
 import type { FinancialState, Transaction } from "../engines/types";
+import { runMatchingFor } from "./invoices";
 
 export async function getCurrentCompanyId(): Promise<string | null> {
   const supabase = getBrowserClient();
@@ -109,6 +110,12 @@ export async function insertTransactions(
     } else {
       inserted += count ?? batch.length;
     }
+  }
+
+  // Auto-trigger Phase 4 matching after a successful bank-statement import.
+  // The new revenue transactions may match existing pending invoices.
+  if (inserted > 0) {
+    await runMatchingFor(companyId).catch(() => {});
   }
 
   return { inserted, skipped, errors };

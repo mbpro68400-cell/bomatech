@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle, FileText, Archive } from "lucide-react";
+import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle, FileText, Archive, Unlink } from "lucide-react";
 import {
   bulkInsertInvoices,
   createInvoice,
   deleteInvoice,
   effectiveStatus,
   listInvoices,
+  unmatchPaid,
   updateInvoiceStatus,
   type BulkInvoiceInput,
   type EffectiveStatus,
@@ -131,6 +132,7 @@ export default function InvoicesPage() {
   const [zipError, setZipError] = useState<string>("");
   const [zipInserted, setZipInserted] = useState(0);
   const [zipSkippedDb, setZipSkippedDb] = useState(0);
+
 
   const today = todayIso();
 
@@ -454,6 +456,13 @@ export default function InvoicesPage() {
     setZipError("");
     setZipInserted(0);
     setZipSkippedDb(0);
+  }
+
+  async function unmatchPaidInvoice(invoice: Invoice) {
+    if (!companyId) return;
+    if (!confirm(`Annuler le rapprochement de ${invoice.number} ? La facture redevient à payer.`)) return;
+    await unmatchPaid(invoice.id);
+    await refresh(companyId);
   }
 
   async function markPaid(invoice: Invoice) {
@@ -964,8 +973,13 @@ export default function InvoicesPage() {
                         </button>
                       )}
                       {eff === "paid" && (
-                        <button type="button" className="btn ghost sm" onClick={() => markPending(inv)} title="Repasser à payer">
+                        <button type="button" className="btn ghost sm" onClick={() => markPending(inv)} title="Repasser à payer (sans toucher au rapprochement)">
                           ↺
+                        </button>
+                      )}
+                      {eff === "paid" && inv.matched_transaction_id && (
+                        <button type="button" className="btn ghost sm" onClick={() => unmatchPaidInvoice(inv)} title="Annuler le rapprochement (réinitialise tout : status pending, paid_at, matched_*)" style={{ marginLeft: 4 }}>
+                          <Unlink size={12} strokeWidth={1.7} />
                         </button>
                       )}
                       {eff !== "cancelled" && (

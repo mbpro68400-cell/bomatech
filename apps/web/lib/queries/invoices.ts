@@ -66,6 +66,8 @@ export async function createInvoice(
   if (error) {
     return { invoice: null, error: error.message };
   }
+  // Auto-trigger Phase 4 matching against existing transactions (silent — see ROADMAP).
+  await runMatchingFor(input.company_id).catch(() => {});
   return { invoice: data as Invoice, error: null };
 }
 
@@ -165,11 +167,194 @@ export async function bulkInsertInvoices(
     }
   }
 
+  // Auto-trigger Phase 4 matching once per batch import (silent — see ROADMAP).
+  if (inserted > 0) {
+    await runMatchingFor(companyId).catch(() => {});
+  }
+
   return { inserted, skipped, errors };
 }
 
 export async function deleteInvoice(id: string): Promise<{ ok: boolean; error: string | null }> {
   const supabase = getBrowserClient();
   const { error } = await supabase.from("invoices_emitted").delete().eq("id", id);
+  return { ok: !error, error: error?.message ?? null };
+}
+
+// ---------- Phase 4 : rapprochement automatique ----------
+//
+// V1 SCOPE NOTICE
+// ----------------
+// V1 reste 1-to-1 only (1 facture ↔ 1 transaction max). Voir migration 0002.
+// Les paiements partiels (table invoice_payments) sont prévus en V2.
+//
+// Sémantique imposée des trois branches du runMatchingFor (en mode 'auto') :
+//   * score ≥ 0.90 ET |amountDelta| ≤ 1 %         → status='paid', paid_at=tx.date,
+//                                                   matched_transaction_id, matched_at=now(),
+//                                                   matched_by='auto', matched_user_id=NULL,
+//                                                   match_confidence=score
+//   * 0.60 ≤ score < 0.90 ET |amountDelta| ≤ 1 %  → status reste 'pending' (suggestion),
+//                                                   matched_transaction_id, matched_at=now(),
+//                                                   matched_by='auto', match_confidence=score,
+//                                                   paid_at reste NULL
+//   * score < 0.60 ou |amountDelta| > 1 %         → AUCUNE écriture en DB
+//                                                   (anomalies in-memory only)
+//
+// Idempotence stricte : skip toute invoice avec matched_transaction_id != null.
+// Re-traitement requiert dismissMatch / unmatchPaid explicite.
+
+import { matchInvoices, type MatchResult, type MatchType } from "../engines/invoice-matching";
+import type { Transaction } from "../engines/types";
+
+export interface MatchSummary {
+  auto: number;
+  suggested: number;
+  underpayment: number;
+  overpayment: number;
+  noCandidate: number;
+}
+
+export interface RunMatchingResult {
+  summary: MatchSummary;
+  anomalies: MatchResult[]; // underpayment + overpayment (in-memory only, never persisted)
+  errors: string[];
+}
+
+export async function runMatchingFor(companyId: string): Promise<RunMatchingResult> {
+  const supabase = getBrowserClient();
+  const errors: string[] = [];
+
+  // Load FULL invoice set (paid + pending + cancelled) so the engine can build
+  // the "tx already attributed" set. The engine internally filters down to
+  // "candidates" (pending + matched_transaction_id IS NULL — strict idempotence).
+  const { data: invoices, error: invErr } = await supabase
+    .from("invoices_emitted")
+    .select("*")
+    .eq("company_id", companyId);
+  if (invErr || !invoices) {
+    errors.push(`Load invoices failed: ${invErr?.message ?? "unknown"}`);
+    return { summary: emptySummary(), anomalies: [], errors };
+  }
+
+  // Load all revenue transactions in the company
+  const { data: txs, error: txErr } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("kind", "revenue")
+    .order("date", { ascending: true })
+    .limit(5000);
+  if (txErr || !txs) {
+    errors.push(`Load transactions failed: ${txErr?.message ?? "unknown"}`);
+    return { summary: emptySummary(), anomalies: [], errors };
+  }
+
+  const results = matchInvoices(invoices as Invoice[], txs as Transaction[]);
+
+  // Persist auto + suggested (audit fields set with matched_by='auto', matched_user_id=null)
+  const nowIso = new Date().toISOString();
+  for (const r of results) {
+    if (r.type === "auto" && r.transactionId) {
+      const { error } = await supabase
+        .from("invoices_emitted")
+        .update({
+          status: "paid" as const,
+          paid_at: r.transactionDate ?? nowIso.slice(0, 10),
+          matched_transaction_id: r.transactionId,
+          match_confidence: r.score ?? null,
+          matched_at: nowIso,
+          matched_by: "auto",
+          matched_user_id: null,
+        })
+        .eq("id", r.invoiceId);
+      if (error) errors.push(`auto ${r.invoiceId}: ${error.message}`);
+    } else if (r.type === "suggested" && r.transactionId) {
+      const { error } = await supabase
+        .from("invoices_emitted")
+        .update({
+          // status stays 'pending' (no paid_at write)
+          matched_transaction_id: r.transactionId,
+          match_confidence: r.score ?? null,
+          matched_at: nowIso,
+          matched_by: "auto",
+          matched_user_id: null,
+        })
+        .eq("id", r.invoiceId);
+      if (error) errors.push(`suggested ${r.invoiceId}: ${error.message}`);
+    }
+    // underpayment / overpayment / no_candidate : NO DB write (anomalies in-memory only)
+  }
+
+  const summary: MatchSummary = {
+    auto: countType(results, "auto"),
+    suggested: countType(results, "suggested"),
+    underpayment: countType(results, "underpayment"),
+    overpayment: countType(results, "overpayment"),
+    noCandidate: countType(results, "no_candidate"),
+  };
+  const anomalies = results.filter((r) => r.type === "underpayment" || r.type === "overpayment");
+  return { summary, anomalies, errors };
+}
+
+function emptySummary(): MatchSummary {
+  return { auto: 0, suggested: 0, underpayment: 0, overpayment: 0, noCandidate: 0 };
+}
+
+function countType(results: MatchResult[], type: MatchType): number {
+  return results.filter((r) => r.type === type).length;
+}
+
+/** User confirms a suggestion : status → 'paid', audit manual + user. */
+export async function confirmSuggestion(
+  invoiceId: string,
+  userId: string | null,
+  paidAt?: string,
+): Promise<{ ok: boolean; error: string | null }> {
+  const supabase = getBrowserClient();
+  const { error } = await supabase
+    .from("invoices_emitted")
+    .update({
+      status: "paid" as const,
+      paid_at: paidAt ?? new Date().toISOString().slice(0, 10),
+      matched_at: new Date().toISOString(),
+      matched_by: "manual",
+      matched_user_id: userId,
+      // matched_transaction_id and match_confidence kept as-is from the suggestion
+    })
+    .eq("id", invoiceId);
+  return { ok: !error, error: error?.message ?? null };
+}
+
+/** User rejects a suggestion (zone 0.60–0.90) — invoice stays pending, match cleared. */
+export async function dismissMatch(invoiceId: string): Promise<{ ok: boolean; error: string | null }> {
+  const supabase = getBrowserClient();
+  const { error } = await supabase
+    .from("invoices_emitted")
+    .update({
+      matched_transaction_id: null,
+      match_confidence: null,
+      matched_at: null,
+      matched_by: null,
+      matched_user_id: null,
+    })
+    .eq("id", invoiceId);
+  return { ok: !error, error: error?.message ?? null };
+}
+
+/** User undoes an applied match on a paid invoice : full reset to pending. */
+export async function unmatchPaid(invoiceId: string): Promise<{ ok: boolean; error: string | null }> {
+  const supabase = getBrowserClient();
+  const { error } = await supabase
+    .from("invoices_emitted")
+    .update({
+      status: "pending" as const,
+      paid_at: null,
+      matched_transaction_id: null,
+      match_confidence: null,
+      matched_at: null,
+      matched_by: null,
+      matched_user_id: null,
+    })
+    .eq("id", invoiceId);
   return { ok: !error, error: error?.message ?? null };
 }
