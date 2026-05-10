@@ -10,6 +10,25 @@ import type { Invoice, InvoiceStatus } from "../engines/types";
 
 export type EffectiveStatus = "pending" | "paid" | "cancelled" | "overdue";
 
+/**
+ * 1.6.5 — Annule les relances `status='scheduled'` pour les factures qui
+ * viennent de passer à `paid` ou `cancelled`. Ne touche pas aux 'sent'
+ * (historique préservé) ni aux 'failed' (laissés tels quels pour debug).
+ *
+ * Best-effort : si l'update plante (RLS, FK, ...), on ne fait pas échouer
+ * l'opération métier d'origine — la pire conséquence est une relance
+ * envoyée tardivement par le cron du lendemain.
+ */
+async function cancelScheduledReminders(invoiceIds: string[]): Promise<void> {
+  if (invoiceIds.length === 0) return;
+  const supabase = getBrowserClient();
+  await supabase
+    .from("invoice_reminders")
+    .update({ status: "cancelled" })
+    .in("invoice_id", invoiceIds)
+    .eq("status", "scheduled");
+}
+
 /** Compute the displayed status: 'overdue' is derived from pending+past-due. */
 export function effectiveStatus(invoice: Invoice, todayIso?: string): EffectiveStatus {
   if (invoice.status !== "pending") return invoice.status;
@@ -95,6 +114,9 @@ export async function updateInvoiceStatus(
     patch.match_confidence = null;
   }
   const { error } = await supabase.from("invoices_emitted").update(patch).eq("id", id);
+  if (!error && (status === "paid" || status === "cancelled")) {
+    await cancelScheduledReminders([id]).catch(() => {});
+  }
   return { ok: !error, error: error?.message ?? null };
 }
 
@@ -294,6 +316,7 @@ export async function runMatchingFor(companyId: string): Promise<RunMatchingResu
 
   // Persist auto + suggested (audit fields set with matched_by='auto', matched_user_id=null)
   const nowIso = new Date().toISOString();
+  const autoMatchedIds: string[] = []; // 1.6.5 : on cancel les reminders en batch après la boucle
   for (const r of results) {
     if (r.type === "auto" && r.transactionId) {
       const { error } = await supabase
@@ -309,6 +332,7 @@ export async function runMatchingFor(companyId: string): Promise<RunMatchingResu
         })
         .eq("id", r.invoiceId);
       if (error) errors.push(`auto ${r.invoiceId}: ${error.message}`);
+      else autoMatchedIds.push(r.invoiceId);
     } else if (r.type === "suggested" && r.transactionId) {
       const { error } = await supabase
         .from("invoices_emitted")
@@ -324,6 +348,11 @@ export async function runMatchingFor(companyId: string): Promise<RunMatchingResu
       if (error) errors.push(`suggested ${r.invoiceId}: ${error.message}`);
     }
     // underpayment / overpayment / no_candidate : NO DB write (anomalies in-memory only)
+  }
+
+  // 1.6.5 : annule les relances scheduled des invoices passées à paid en auto
+  if (autoMatchedIds.length > 0) {
+    await cancelScheduledReminders(autoMatchedIds).catch(() => {});
   }
 
   const summary: MatchSummary = {
@@ -363,6 +392,9 @@ export async function confirmSuggestion(
       // matched_transaction_id and match_confidence kept as-is from the suggestion
     })
     .eq("id", invoiceId);
+  if (!error) {
+    await cancelScheduledReminders([invoiceId]).catch(() => {});
+  }
   return { ok: !error, error: error?.message ?? null };
 }
 
@@ -420,7 +452,11 @@ export async function applyManualMultiMatch(
     .in("id", invoiceIds)
     .select("id");
   if (error) return { updated: 0, error: error.message };
-  return { updated: (data ?? []).length, error: null };
+  const ids = (data ?? []).map((d) => d.id);
+  if (ids.length > 0) {
+    await cancelScheduledReminders(ids).catch(() => {});
+  }
+  return { updated: ids.length, error: null };
 }
 
 /** User undoes an applied match on a paid invoice : full reset to pending. */
