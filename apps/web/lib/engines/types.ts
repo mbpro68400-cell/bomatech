@@ -105,6 +105,7 @@ export interface Invoice {
   company_id: string;
   number: string;
   client_name: string;
+  client_email?: string | null; // 1.6.5 — optionnel, requis pour les relances auto
   amount_ht_cents: number;
   amount_tva_cents: number;
   amount_ttc_cents: number;
@@ -124,6 +125,29 @@ export interface Invoice {
   created_by: string | null;
   // Phase 1.7 — accounting periods (default false, set autoritairement par trigger PG)
   is_closed_period?: boolean;
+}
+
+// ---------- Relances de factures (1.6.5) ----------
+export type ReminderStatus = "scheduled" | "sent" | "failed" | "cancelled";
+export type ReminderLevel = 1 | 2;
+export type ReminderOrigin = "auto" | "manual";
+
+export interface InvoiceReminder {
+  id: string;
+  invoice_id: string;
+  company_id: string;
+  level: ReminderLevel;
+  status: ReminderStatus;
+  scheduled_at: string;
+  sent_at: string | null;
+  failed_at: string | null;
+  error_message: string | null;
+  email_to: string;
+  subject: string;
+  body: string;
+  created_by: ReminderOrigin;
+  created_by_user_id: string | null;
+  created_at: string;
 }
 
 // Phase 1.7 — accounting periods
