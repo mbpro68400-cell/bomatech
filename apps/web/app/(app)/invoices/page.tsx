@@ -1,23 +1,30 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle, FileText, Archive, Unlink } from "lucide-react";
+import { CheckCircle2, Loader2, Inbox, Plus, Upload, X, AlertCircle, FileText, Archive, Unlink, Mail, Send } from "lucide-react";
 import {
   bulkInsertInvoices,
   createInvoice,
   deleteInvoice,
   effectiveStatus,
+  getLastClientEmail,
   listInvoices,
+  listRemindersByInvoice,
+  listRemindersForInvoice,
   unmatchPaid,
   updateInvoiceStatus,
   type BulkInvoiceInput,
   type EffectiveStatus,
+  type ReminderRowUI,
+  type ReminderSummary,
 } from "@/lib/queries/invoices";
 import { getCurrentCompanyId } from "@/lib/queries/transactions";
-import { parseInvoiceCsv, type ParseInvoiceResult, type ParsedInvoiceRow } from "@/lib/csv/invoice-csv-parser";
+import { parseInvoiceCsv, type ParseInvoiceResult } from "@/lib/csv/invoice-csv-parser";
 import { parseInvoicePdf, type ParseInvoicePdfResult } from "@/lib/pdf/invoice-pdf-parser";
 import { parseInvoiceZip, type ParseInvoiceZipResult } from "@/lib/zip/invoice-zip-parser";
 import type { Invoice } from "@/lib/engines/types";
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 type Filter = "all" | "pending" | "overdue" | "paid";
 
@@ -80,6 +87,7 @@ function matchesFilter(inv: Invoice, f: Filter, today: string): boolean {
 interface FormState {
   number: string;
   client_name: string;
+  client_email: string;
   amount_ht_input: string;
   vat_rate: number;
   issued_at: string;
@@ -90,6 +98,7 @@ interface FormState {
 const emptyForm = (): FormState => ({
   number: "",
   client_name: "",
+  client_email: "",
   amount_ht_input: "",
   vat_rate: 0.2,
   issued_at: todayIso(),
@@ -136,11 +145,23 @@ export default function InvoicesPage() {
   const [zipArchived, setZipArchived] = useState(0);
 
 
+  // 1.6.5 — Relances
+  const [reminderSummaries, setReminderSummaries] = useState<Map<string, ReminderSummary>>(new Map());
+  const [drawerInvoice, setDrawerInvoice] = useState<Invoice | null>(null);
+  const [drawerReminders, setDrawerReminders] = useState<ReminderRowUI[]>([]);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [sendingLevel, setSendingLevel] = useState<1 | 2 | null>(null);
+  const [sendError, setSendError] = useState<string>("");
+
   const today = todayIso();
 
   async function refresh(cid: string) {
-    const data = await listInvoices(cid, 500);
+    const [data, rems] = await Promise.all([
+      listInvoices(cid, 500),
+      listRemindersByInvoice(cid),
+    ]);
     setInvoices(data);
+    setReminderSummaries(rems);
   }
 
   useEffect(() => {
@@ -186,6 +207,12 @@ export default function InvoicesPage() {
       return;
     }
 
+    const emailTrimmed = form.client_email.trim();
+    if (emailTrimmed && !EMAIL_RE.test(emailTrimmed)) {
+      setFormError("Email client invalide. Laisse vide ou corrige le format.");
+      return;
+    }
+
     const ht = parseEurInput(form.amount_ht_input);
     if (!isFinite(ht) || ht <= 0) {
       setFormError("Montant HT invalide.");
@@ -205,6 +232,7 @@ export default function InvoicesPage() {
       company_id: companyId,
       number: form.number.trim(),
       client_name: form.client_name.trim(),
+      client_email: emailTrimmed || null,
       amount_ht_cents: ht,
       amount_tva_cents: tva,
       amount_ttc_cents: ttc,
@@ -347,6 +375,7 @@ export default function InvoicesPage() {
     setForm({
       number: inv.number ?? "",
       client_name: inv.client_name ?? "",
+      client_email: "", // PDF parser n'extrait pas l'email — l'utilisateur le saisira
       amount_ht_input: inv.amount_ht_cents != null ? (inv.amount_ht_cents / 100).toString().replace(".", ",") : "",
       vat_rate: inv.vat_rate ?? 0.2,
       issued_at: inv.issued_at ?? todayIso(),
@@ -495,6 +524,61 @@ export default function InvoicesPage() {
     if (!confirm(`Supprimer définitivement la facture ${invoice.number} ?`)) return;
     await deleteInvoice(invoice.id);
     await refresh(companyId);
+  }
+
+  // ---------- 1.6.5 — Relances ----------
+
+  /** Pré-remplit l'email client depuis la dernière facture connue pour ce client (UX assist). */
+  async function maybePrefillEmail() {
+    if (!companyId) return;
+    if (form.client_email.trim()) return; // ne pas écraser une saisie utilisateur
+    const lastEmail = await getLastClientEmail(companyId, form.client_name);
+    if (lastEmail) {
+      setForm((f) => (f.client_email.trim() ? f : { ...f, client_email: lastEmail }));
+    }
+  }
+
+  async function openReminderDrawer(invoice: Invoice) {
+    setDrawerInvoice(invoice);
+    setDrawerLoading(true);
+    setSendError("");
+    const rems = await listRemindersForInvoice(invoice.id);
+    setDrawerReminders(rems);
+    setDrawerLoading(false);
+  }
+
+  function closeReminderDrawer() {
+    setDrawerInvoice(null);
+    setDrawerReminders([]);
+    setSendError("");
+    setSendingLevel(null);
+  }
+
+  async function sendReminderManual(level: 1 | 2) {
+    if (!drawerInvoice || !companyId) return;
+    setSendingLevel(level);
+    setSendError("");
+    try {
+      const res = await fetch(`/api/invoices/${drawerInvoice.id}/send-reminder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setSendError(json.error ?? "Erreur lors de l'envoi.");
+      } else {
+        // Refresh drawer + summaries
+        const rems = await listRemindersForInvoice(drawerInvoice.id);
+        setDrawerReminders(rems);
+        const sum = await listRemindersByInvoice(companyId);
+        setReminderSummaries(sum);
+      }
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSendingLevel(null);
+    }
   }
 
   if (loading) {
@@ -870,7 +954,21 @@ export default function InvoicesPage() {
               <input type="text" value={form.number} onChange={(e) => setForm({ ...form, number: e.target.value })} placeholder="FAC-2026-001" />
             </Field>
             <Field label="Client *">
-              <input type="text" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} placeholder="Nom du client" />
+              <input
+                type="text"
+                value={form.client_name}
+                onChange={(e) => setForm({ ...form, client_name: e.target.value })}
+                onBlur={maybePrefillEmail}
+                placeholder="Nom du client"
+              />
+            </Field>
+            <Field label="Email client (relances auto)">
+              <input
+                type="email"
+                value={form.client_email}
+                onChange={(e) => setForm({ ...form, client_email: e.target.value })}
+                placeholder="contact@client.fr"
+              />
             </Field>
             <Field label="Montant HT (€) *">
               <input type="text" inputMode="decimal" value={form.amount_ht_input} onChange={(e) => setForm({ ...form, amount_ht_input: e.target.value })} placeholder="1500,00" />
@@ -965,6 +1063,7 @@ export default function InvoicesPage() {
                 <th>Émise</th>
                 <th>Échéance</th>
                 <th>Statut</th>
+                <th>Relances</th>
                 <th className="num">TTC</th>
                 <th></th>
               </tr>
@@ -972,6 +1071,8 @@ export default function InvoicesPage() {
             <tbody>
               {filtered.map((inv) => {
                 const eff = effectiveStatus(inv, today);
+                const sum = reminderSummaries.get(inv.id);
+                const hasEmail = !!inv.client_email;
                 return (
                   <tr key={inv.id}>
                     <td className="mono"><strong style={{ fontWeight: 500 }}>{inv.number}</strong></td>
@@ -980,6 +1081,21 @@ export default function InvoicesPage() {
                     <td className="mono muted">{formatDate(inv.due_at)}</td>
                     <td>
                       <span className={`tag ${statusTone(eff)}`}>{statusLabel(eff)}</span>
+                    </td>
+                    <td>
+                      {hasEmail ? (
+                        <button
+                          type="button"
+                          className="btn ghost sm"
+                          onClick={() => openReminderDrawer(inv)}
+                          title="Voir l'historique des relances ou en envoyer une"
+                          style={{ padding: "2px 8px" }}
+                        >
+                          <ReminderBadge summary={sum} />
+                        </button>
+                      ) : (
+                        <span className="muted" style={{ fontSize: 12 }} title="Pas d'email client renseigné">—</span>
+                      )}
                     </td>
                     <td className="num mono">{formatEur(inv.amount_ttc_cents)}</td>
                     <td className="num">
@@ -1013,6 +1129,18 @@ export default function InvoicesPage() {
             </tbody>
           </table>
         </article>
+      )}
+
+      {drawerInvoice && (
+        <ReminderDrawer
+          invoice={drawerInvoice}
+          reminders={drawerReminders}
+          loading={drawerLoading}
+          sendingLevel={sendingLevel}
+          sendError={sendError}
+          onSend={sendReminderManual}
+          onClose={closeReminderDrawer}
+        />
       )}
     </>
   );
@@ -1138,6 +1266,209 @@ function Tile({ label, value, tone }: { label: string; value: number; tone: stri
     <div style={{ padding: 10, background: "var(--surface-sunken)", borderRadius: 6, textAlign: "center" }}>
       <div style={{ fontSize: 22, fontWeight: 500, color: colorMap[tone] ?? "var(--fg)" }}>{value}</div>
       <div style={{ fontSize: 11, color: "var(--fg-muted)" }}>{label}</div>
+    </div>
+  );
+}
+
+// ---------- 1.6.5 — Composants relances ----------
+
+function ReminderBadge({ summary }: { summary: ReminderSummary | undefined }) {
+  if (!summary) {
+    return (
+      <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+        <Mail size={12} strokeWidth={1.7} style={{ verticalAlign: "middle", marginRight: 4 }} />
+        Aucune
+      </span>
+    );
+  }
+  if (summary.hasFailed) {
+    return (
+      <span style={{ fontSize: 12, color: "var(--danger)" }}>
+        <AlertCircle size={12} strokeWidth={1.7} style={{ verticalAlign: "middle", marginRight: 4 }} />
+        Erreur
+      </span>
+    );
+  }
+  if (summary.totalSent > 0) {
+    return (
+      <span style={{ fontSize: 12, color: "var(--success)" }}>
+        <CheckCircle2 size={12} strokeWidth={1.7} style={{ verticalAlign: "middle", marginRight: 4 }} />
+        {summary.totalSent} envoyée{summary.totalSent > 1 ? "s" : ""}
+      </span>
+    );
+  }
+  if (summary.hasScheduled) {
+    return (
+      <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>
+        <Loader2 size={12} strokeWidth={1.7} style={{ verticalAlign: "middle", marginRight: 4 }} />
+        Programmée
+      </span>
+    );
+  }
+  return <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>—</span>;
+}
+
+function ReminderDrawer({
+  invoice,
+  reminders,
+  loading,
+  sendingLevel,
+  sendError,
+  onSend,
+  onClose,
+}: {
+  invoice: Invoice;
+  reminders: ReminderRowUI[];
+  loading: boolean;
+  sendingLevel: 1 | 2 | null;
+  sendError: string;
+  onSend: (level: 1 | 2) => void;
+  onClose: () => void;
+}) {
+  const palier1Sent = reminders.some((r) => r.level === 1 && r.status === "sent");
+  const has1 = reminders.some((r) => r.level === 1);
+  const has2 = reminders.some((r) => r.level === 2);
+
+  function fmtDate(iso: string): string {
+    return new Date(iso).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+  function statusColor(s: string): string {
+    if (s === "sent") return "var(--success)";
+    if (s === "failed") return "var(--danger)";
+    if (s === "cancelled") return "var(--fg-muted)";
+    return "var(--accent)";
+  }
+  function statusFr(s: string): string {
+    if (s === "sent") return "Envoyée";
+    if (s === "failed") return "Échec";
+    if (s === "cancelled") return "Annulée";
+    if (s === "scheduled") return "Programmée";
+    return s;
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.4)",
+        display: "flex",
+        justifyContent: "flex-end",
+        zIndex: 100,
+      }}
+    >
+      <aside
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(560px, 100vw)",
+          height: "100vh",
+          background: "var(--surface)",
+          boxShadow: "var(--shadow-lg)",
+          padding: 24,
+          overflowY: "auto",
+        }}
+      >
+        <header style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
+          <h2 className="serif" style={{ margin: 0, fontSize: 22, letterSpacing: "-0.02em", flex: 1 }}>
+            Relances — {invoice.number}
+          </h2>
+          <button type="button" className="btn ghost sm" onClick={onClose}>
+            <X size={14} strokeWidth={1.7} />
+          </button>
+        </header>
+
+        <p className="muted" style={{ fontSize: 13, margin: "0 0 16px" }}>
+          Client : <strong>{invoice.client_name}</strong>
+          {invoice.client_email ? <> · <span className="mono">{invoice.client_email}</span></> : null}
+        </p>
+
+        <section style={{ marginBottom: 24 }}>
+          <h3 className="serif" style={{ fontSize: 16, margin: "0 0 8px" }}>Envoyer une relance maintenant</h3>
+          <p className="muted" style={{ fontSize: 12, margin: "0 0 8px" }}>
+            Envoi immédiat (sans attendre le cron). Le palier 2 nécessite que le palier 1 ait été envoyé au préalable.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="btn primary sm"
+              onClick={() => onSend(1)}
+              disabled={sendingLevel !== null || has1}
+              title={has1 ? "Une relance palier 1 existe déjà pour cette facture" : "Envoyer la relance amiable"}
+            >
+              {sendingLevel === 1 ? <Loader2 size={14} strokeWidth={2} className="spin" /> : <Send size={14} strokeWidth={1.7} />}
+              {" "}Palier 1 — Amiable
+            </button>
+            <button
+              type="button"
+              className="btn primary sm"
+              onClick={() => onSend(2)}
+              disabled={sendingLevel !== null || has2 || !palier1Sent}
+              title={
+                has2 ? "Une mise en demeure palier 2 existe déjà"
+                  : !palier1Sent ? "Envoie d'abord le palier 1 amiable"
+                  : "Envoyer la mise en demeure"
+              }
+            >
+              {sendingLevel === 2 ? <Loader2 size={14} strokeWidth={2} className="spin" /> : <Send size={14} strokeWidth={1.7} />}
+              {" "}Palier 2 — Mise en demeure
+            </button>
+          </div>
+          {sendError && (
+            <p style={{ color: "var(--danger)", fontSize: 13, margin: "8px 0 0" }}>
+              <AlertCircle size={14} strokeWidth={1.7} style={{ verticalAlign: "middle", marginRight: 4 }} />
+              {sendError}
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h3 className="serif" style={{ fontSize: 16, margin: "0 0 8px" }}>Historique</h3>
+          {loading ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 16 }}>
+              <Loader2 size={16} strokeWidth={1.7} className="spin" />
+              <span className="muted" style={{ fontSize: 13 }}>Chargement…</span>
+            </div>
+          ) : reminders.length === 0 ? (
+            <p className="muted" style={{ fontSize: 13 }}>Aucune relance envoyée pour l'instant.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {reminders.map((r) => (
+                <details key={r.id} style={{ padding: 10, background: "var(--surface-sunken)", borderRadius: 6 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 13 }}>
+                    <strong>Palier {r.level}</strong>
+                    {" — "}
+                    <span style={{ color: statusColor(r.status) }}>{statusFr(r.status)}</span>
+                    {" · "}
+                    <span className="mono muted">
+                      {r.sent_at ? fmtDate(r.sent_at) : r.failed_at ? fmtDate(r.failed_at) : fmtDate(r.created_at)}
+                    </span>
+                    {" · "}
+                    <span className="muted" style={{ fontSize: 11 }}>{r.created_by}</span>
+                  </summary>
+                  <div style={{ marginTop: 8, fontSize: 12 }}>
+                    <p style={{ margin: "0 0 4px" }}><strong>À :</strong> <span className="mono">{r.email_to}</span></p>
+                    <p style={{ margin: "0 0 4px" }}><strong>Sujet :</strong> {r.subject}</p>
+                    <pre style={{ background: "var(--surface)", padding: 8, borderRadius: 4, whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 12, margin: "4px 0 0" }}>
+                      {r.body}
+                    </pre>
+                    {r.error_message && (
+                      <p style={{ color: "var(--danger)", marginTop: 6 }}>
+                        <strong>Erreur :</strong> {r.error_message}
+                      </p>
+                    )}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <style jsx>{`
+          .spin { animation: spin 1s linear infinite; }
+          @keyframes spin { to { transform: rotate(360deg); } }
+        `}</style>
+      </aside>
     </div>
   );
 }

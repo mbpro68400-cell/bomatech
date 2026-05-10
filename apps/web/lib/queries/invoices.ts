@@ -70,6 +70,7 @@ export interface CreateInvoiceInput {
   company_id: string;
   number: string;
   client_name: string;
+  client_email?: string | null;
   amount_ht_cents: number;
   amount_tva_cents: number;
   amount_ttc_cents: number;
@@ -123,6 +124,7 @@ export async function updateInvoiceStatus(
 export interface BulkInvoiceInput {
   number: string;
   client_name: string;
+  client_email?: string | null;
   amount_ht_cents: number;
   amount_tva_cents: number;
   amount_ttc_cents: number;
@@ -191,6 +193,7 @@ export async function bulkInsertInvoices(
     company_id: companyId,
     number: r.number,
     client_name: r.client_name,
+    client_email: r.client_email ?? null,
     amount_ht_cents: r.amount_ht_cents,
     amount_tva_cents: r.amount_tva_cents,
     amount_ttc_cents: r.amount_ttc_cents,
@@ -475,4 +478,96 @@ export async function unmatchPaid(invoiceId: string): Promise<{ ok: boolean; err
     })
     .eq("id", invoiceId);
   return { ok: !error, error: error?.message ?? null };
+}
+
+// ---------- 1.6.5 — Email client + relances ----------
+
+/**
+ * Récupère le dernier `client_email` connu pour un (company_id, client_name).
+ * Utilisé pour pré-remplir le champ email lors de la saisie d'une nouvelle facture.
+ * Retourne null si aucun email trouvé pour ce client.
+ */
+export async function getLastClientEmail(
+  companyId: string,
+  clientName: string,
+): Promise<string | null> {
+  if (!clientName.trim()) return null;
+  const supabase = getBrowserClient();
+  const { data, error } = await supabase
+    .from("invoices_emitted")
+    .select("client_email")
+    .eq("company_id", companyId)
+    .eq("client_name", clientName.trim())
+    .not("client_email", "is", null)
+    .order("issued_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return (data as { client_email: string | null }).client_email;
+}
+
+/** Résumé d'état des relances pour une invoice (pour la colonne UI). */
+export interface ReminderSummary {
+  totalSent: number;
+  hasFailed: boolean;
+  hasScheduled: boolean;
+}
+
+/**
+ * Charge les reminders de toutes les invoices d'une company et les indexe par
+ * invoice_id pour affichage en colonne. Filtre RLS company-scoped automatique.
+ */
+export async function listRemindersByInvoice(
+  companyId: string,
+): Promise<Map<string, ReminderSummary>> {
+  const supabase = getBrowserClient();
+  const { data, error } = await supabase
+    .from("invoice_reminders")
+    .select("invoice_id, status")
+    .eq("company_id", companyId);
+  const out = new Map<string, ReminderSummary>();
+  if (error || !data) return out;
+  for (const r of data as { invoice_id: string; status: string }[]) {
+    const summary = out.get(r.invoice_id) ?? {
+      totalSent: 0,
+      hasFailed: false,
+      hasScheduled: false,
+    };
+    if (r.status === "sent") summary.totalSent++;
+    if (r.status === "failed") summary.hasFailed = true;
+    if (r.status === "scheduled") summary.hasScheduled = true;
+    out.set(r.invoice_id, summary);
+  }
+  return out;
+}
+
+export interface ReminderRowUI {
+  id: string;
+  level: number;
+  status: string;
+  scheduled_at: string;
+  sent_at: string | null;
+  failed_at: string | null;
+  error_message: string | null;
+  email_to: string;
+  subject: string;
+  body: string;
+  created_by: string;
+  created_at: string;
+}
+
+/** Charge les rows reminders complètes d'une invoice (pour le drawer timeline). */
+export async function listRemindersForInvoice(
+  invoiceId: string,
+): Promise<ReminderRowUI[]> {
+  const supabase = getBrowserClient();
+  const { data, error } = await supabase
+    .from("invoice_reminders")
+    .select(
+      "id, level, status, scheduled_at, sent_at, failed_at, error_message, email_to, subject, body, created_by, created_at",
+    )
+    .eq("invoice_id", invoiceId)
+    .order("created_at", { ascending: false });
+  if (error || !data) return [];
+  return data as ReminderRowUI[];
 }

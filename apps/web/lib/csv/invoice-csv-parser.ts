@@ -28,6 +28,7 @@ import { parseFrenchAmount, parseFrenchDate } from "./cic-parser";
 export interface ParsedInvoiceRow {
   number: string;
   client_name: string;
+  client_email: string | null;
   amount_ht_cents: number;
   amount_tva_cents: number;
   amount_ttc_cents: number;
@@ -47,6 +48,7 @@ export interface ParseInvoiceResult {
 const COLUMN_ALIASES: Record<string, string[]> = {
   number: ["numero", "number", "n", "no", "num", "ref", "reference"],
   client_name: ["client", "tiers", "nom_client", "nom", "client_name", "name", "denomination"],
+  client_email: ["email", "client_email", "mail", "courriel", "email_client", "contact_email"],
   amount_ht: ["ht", "montant_ht", "total_ht", "ht_eur", "amount_ht", "base_ht"],
   amount_ttc: ["ttc", "montant_ttc", "total_ttc", "ttc_eur", "amount_ttc"],
   amount_tva: ["montant_tva", "total_tva", "tva_eur", "amount_tva"],
@@ -55,6 +57,8 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   due_at: ["echeance", "due_at", "due", "date_echeance", "date_d_echeance"],
   description: ["description", "libelle", "prestation", "designation", "objet"],
 };
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function parseInvoiceCsv(text: string): ParseInvoiceResult {
   const lines = text.split(/\r\n|\r|\n/).filter((l) => l.trim().length > 0);
@@ -126,6 +130,15 @@ export function parseInvoiceCsv(text: string): ParseInvoiceResult {
       const issuedRaw = cols[colIdx.issued_at]?.trim();
       const dueRaw = cols[colIdx.due_at]?.trim();
       const description = "description" in colIdx ? cols[colIdx.description]?.trim() || null : null;
+      let clientEmail: string | null = null;
+      if ("client_email" in colIdx) {
+        const raw = cols[colIdx.client_email]?.trim();
+        if (raw) {
+          if (EMAIL_RE.test(raw)) clientEmail = raw;
+          // Email mal formé : on l'ignore silencieusement (la facture est créée sans email,
+          // l'utilisateur peut le saisir plus tard via l'UI). On évite d'échouer toute la ligne.
+        }
+      }
 
       if (!number || !clientName) {
         errors.push({ line: lineNo, message: "Numéro ou client manquant" });
@@ -204,6 +217,7 @@ export function parseInvoiceCsv(text: string): ParseInvoiceResult {
       rows.push({
         number,
         client_name: clientName,
+        client_email: clientEmail,
         amount_ht_cents: htCents,
         amount_tva_cents: tvaCents,
         amount_ttc_cents: ttcCents,
