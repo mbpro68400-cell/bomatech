@@ -167,3 +167,73 @@ export interface AccountingClosure {
   closed_by: string | null;
   notes: string | null;
 }
+
+// ---------- Veille fournisseurs (1.9) ----------
+// Module surveillance santé juridique fournisseurs via Pappers.
+// Engine pur lib/engines/supplier-diff.ts compare deux snapshots et produit
+// les alertes typées. Le mapping severity ↔ event_type est enforced côté TS
+// (cf CRITICAL_EVENT_TYPES dans supplier-diff.ts), pas en DB.
+
+export type SupplierStatus = "active" | "cessation" | "radiation" | "unknown";
+
+export type SupplierAlertSeverity = "critical" | "info";
+
+export type SupplierAlertEventType =
+  | "procedure_collective_opened"
+  | "procedure_collective_judgment"
+  | "cessation"
+  | "radiation"
+  | "dirigeant_change"
+  | "comptes_published"
+  | "address_change"
+  | "naf_change"
+  | "capital_change"
+  | "legal_form_change";
+
+export type ProcedureCollectiveKind =
+  | "sauvegarde"
+  | "redressement"
+  | "liquidation"
+  | "conciliation";
+
+export type ProcedureCollectiveJudgmentKind = "plan" | "conversion" | "cloture";
+
+export interface Dirigeant {
+  nom: string;
+  prenom: string;
+  qualite: string;
+  depuis: string | null; // YYYY-MM-DD
+}
+
+/**
+ * Subset normalisé du payload Pappers, stocké en jsonb dans
+ * suppliers.last_pappers_snapshot. Sert de baseline au diff au prochain poll.
+ */
+export interface PappersSnapshot {
+  siren: string;
+  name: string;
+  legal_form: string | null;
+  naf_code: string | null;
+  registration_date: string | null;
+  status: SupplierStatus;
+  procedure_collective: {
+    open: boolean;
+    kind: ProcedureCollectiveKind | null;
+    last_judgment_kind: ProcedureCollectiveJudgmentKind | null;
+    last_judgment_date: string | null;
+  };
+  dirigeants: Dirigeant[];
+  capital_cents: number | null;
+  address_siege: string | null;
+  last_comptes_published_year: number | null;
+}
+
+/**
+ * Output de l'engine supplier-diff. Sans id/created_at/dismissed_at — ceux-ci
+ * sont ajoutés au moment de l'INSERT en DB (P2b).
+ */
+export interface SupplierAlertOutput {
+  severity: SupplierAlertSeverity;
+  event_type: SupplierAlertEventType;
+  payload: Record<string, unknown>;
+}
