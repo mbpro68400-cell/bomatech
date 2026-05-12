@@ -237,3 +237,36 @@ export interface SupplierAlertOutput {
   event_type: SupplierAlertEventType;
   payload: Record<string, unknown>;
 }
+
+/** Row DB de la table `suppliers` (cf migration 0007). */
+export interface Supplier {
+  id: string;
+  company_id: string;
+  name: string;
+  siren: string;
+  legal_form: string | null;
+  naf_code: string | null;
+  registration_date: string | null;
+  status: SupplierStatus;
+  dirigeants: Dirigeant[];
+  last_pappers_snapshot: PappersSnapshot | null;
+  last_polled_at: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by_user_id: string | null;
+}
+
+/** Row DB de la table `supplier_alerts` (cf migration 0007). */
+export interface SupplierAlert {
+  id: string;
+  supplier_id: string;
+  company_id: string;
+  severity: SupplierAlertSeverity;
+  event_type: SupplierAlertEventType;
+  payload: Record<string, unknown>;
+  email_sent_at: string | null;
+  dismissed_at: string | null;
+  dismissed_by_user_id: string | null;
+  created_at: string;
+}
