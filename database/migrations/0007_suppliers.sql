@@ -204,7 +204,7 @@ CREATE POLICY suppliers_insert ON public.suppliers
   FOR INSERT
   WITH CHECK (company_id IN (
     SELECT company_id FROM public.company_members
-    WHERE user_id = auth.uid() AND role IN ('owner', 'admin', 'member')
+    WHERE user_id = auth.uid() AND role IN ('owner', 'admin')
   ));
 
 CREATE POLICY suppliers_update ON public.suppliers
