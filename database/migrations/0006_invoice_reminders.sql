@@ -98,7 +98,7 @@ CREATE POLICY reminders_insert ON public.invoice_reminders
   FOR INSERT
   WITH CHECK (company_id IN (
     SELECT company_id FROM public.company_members
-    WHERE user_id = auth.uid() AND role IN ('owner', 'admin', 'member')
+    WHERE user_id = auth.uid() AND role IN ('owner', 'admin', 'accountant')
   ));
 
 CREATE POLICY reminders_update ON public.invoice_reminders
