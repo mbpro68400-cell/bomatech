@@ -17,6 +17,7 @@ import {
   FileSpreadsheet,
   Settings,
   ChevronDown,
+  ShieldCheck,
 } from "lucide-react";
 
 type NavItem = {
@@ -38,6 +39,10 @@ const PILOTAGE: NavItem[] = [
   { href: "/simulate", label: "Simulation", icon: Sparkles, kbd: "G S" },
   { href: "/insights", label: "Alertes & insights", icon: Bell, kbd: "G N", dot: true },
   { href: "/closing", label: "Avant-clôture", icon: CalendarCheck },
+];
+
+const TIERS: NavItem[] = [
+  { href: "/suppliers", label: "Veille fournisseurs", icon: ShieldCheck },
 ];
 
 const COMPTABLE: NavItem[] = [
@@ -96,6 +101,18 @@ export function Sidebar() {
       <div className="nav-section">Pilotage</div>
       <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {PILOTAGE.map((item) => (
+          <NavLink
+            key={item.href}
+            item={item}
+            active={pathname?.startsWith(item.href) ?? false}
+          />
+        ))}
+      </nav>
+
+      {/* TIERS */}
+      <div className="nav-section">Tiers</div>
+      <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {TIERS.map((item) => (
           <NavLink
             key={item.href}
             item={item}
