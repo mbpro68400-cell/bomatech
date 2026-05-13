@@ -13,6 +13,7 @@
  */
 
 import { formatDateLong, formatEurosPrecise } from "../format";
+import type { Supplier, SupplierAlert } from "../engines/types";
 
 interface ReminderInvoice {
   number: string;
@@ -111,4 +112,220 @@ export function renderReminder(
       ctx.company.name,
     ].join("\n"),
   };
+}
+
+// ============================================================
+// 1.9 — Digest veille fournisseurs (alertes critical uniquement)
+// ============================================================
+// Le digest est éphémère : non snapshoté en DB. Si retry, on régénère
+// à partir des alertes critical avec email_sent_at IS NULL. La table
+// supplier_alerts n'a donc pas de colonnes subject/body (cf 0007).
+
+// URLs hardcodées V1 — à externaliser en NEXT_PUBLIC_APP_URL en V1.5
+// (cf ROADMAP « limites V1 1.9 »).
+const BOMATECH_APP_URL = "https://bomatech.vercel.app";
+const BODACC_URL = "https://www.bodacc.fr";
+
+/** Alerte enrichie avec un sous-ensemble de son supplier pour le rendu. */
+export type AlertWithSupplier = SupplierAlert & {
+  supplier: Pick<Supplier, "id" | "name" | "siren">;
+};
+
+export interface RenderedSupplierDigest {
+  subject: string;
+  body: string;
+}
+
+function assertAllCritical(alerts: AlertWithSupplier[]): void {
+  for (const a of alerts) {
+    if (a.severity !== "critical") {
+      throw new Error(
+        "supplierAlertDigestTemplate: only critical alerts are accepted",
+      );
+    }
+  }
+}
+
+function eventLabel(alert: AlertWithSupplier): string {
+  const p = alert.payload as Record<string, unknown>;
+  switch (alert.event_type) {
+    case "procedure_collective_opened": {
+      const kind = typeof p.kind === "string" ? p.kind : "non précisée";
+      return `ouverture de procédure collective (${kind})`;
+    }
+    case "procedure_collective_judgment": {
+      const kind = typeof p.kind === "string" ? p.kind : "non précisé";
+      return `jugement : ${kind}`;
+    }
+    case "cessation":
+      return "cessation d'activité déclarée";
+    case "radiation":
+      return "radiation du RCS";
+    default:
+      // Cas garde-fou : assertAllCritical doit normalement avoir filtré.
+      throw new Error(
+        "supplierAlertDigestTemplate: only critical alerts are accepted",
+      );
+  }
+}
+
+/**
+ * Detail dépendant du payload. Retourne null si le payload n'a pas les
+ * champs attendus — la ligne est alors omise (pas de "[manquant]" ni
+ * "undefined" affichés à l'utilisateur).
+ */
+function eventDetail(alert: AlertWithSupplier): string | null {
+  const p = alert.payload as Record<string, unknown>;
+  switch (alert.event_type) {
+    case "procedure_collective_opened": {
+      const date =
+        typeof p.judgment_date === "string" ? p.judgment_date : null;
+      const tribunal = typeof p.tribunal === "string" ? p.tribunal : null;
+      if (!date && !tribunal) return null;
+      const parts: string[] = [];
+      if (date) parts.push(`Date du jugement : ${formatDateLong(date)}`);
+      if (tribunal) parts.push(`Tribunal : ${tribunal}`);
+      return parts.join(". ") + ".";
+    }
+    case "procedure_collective_judgment": {
+      const date =
+        typeof p.judgment_date === "string" ? p.judgment_date : null;
+      if (!date) return null;
+      return `Date : ${formatDateLong(date)}.`;
+    }
+    case "cessation": {
+      const date =
+        typeof p.effective_date === "string" ? p.effective_date : null;
+      if (!date) return null;
+      return `Date effective : ${formatDateLong(date)}.`;
+    }
+    case "radiation": {
+      const date =
+        typeof p.radiation_date === "string" ? p.radiation_date : null;
+      if (!date) return null;
+      return `Date de radiation : ${formatDateLong(date)}.`;
+    }
+    default:
+      return null;
+  }
+}
+
+function buildIntroAdaptative(numAlerts: number, numSuppliers: number): string {
+  if (numAlerts === 1 && numSuppliers === 1) {
+    return "un événement critique sur 1 fournisseur";
+  }
+  if (numAlerts > 1 && numSuppliers === 1) {
+    return `${numAlerts} événements critiques sur 1 fournisseur`;
+  }
+  if (numAlerts === 1 && numSuppliers > 1) {
+    return `1 événement critique réparti sur ${numSuppliers} fournisseurs`;
+  }
+  return `${numAlerts} événements critiques sur ${numSuppliers} fournisseurs`;
+}
+
+function buildSubject(alerts: AlertWithSupplier[]): string {
+  const supplierIds = new Set(alerts.map((a) => a.supplier.id));
+  const numSuppliers = supplierIds.size;
+  const numAlerts = alerts.length;
+  if (numSuppliers === 1 && numAlerts === 1) {
+    return `Alerte fournisseur : ${alerts[0].supplier.name} — ${eventLabel(alerts[0])}`;
+  }
+  if (numSuppliers === 1 && numAlerts > 1) {
+    return `Alerte fournisseur : ${alerts[0].supplier.name} — ${numAlerts} événements détectés`;
+  }
+  return `Veille fournisseurs : ${numAlerts} alertes critiques sur ${numSuppliers} fournisseurs`;
+}
+
+/**
+ * Groupe les alertes par supplier en préservant l'ordre d'apparition
+ * (Map preserve insertion order). Le caller (P6) est responsable de
+ * passer un tableau pré-ordonné.
+ */
+function groupBySupplier(
+  alerts: AlertWithSupplier[],
+): Map<string, AlertWithSupplier[]> {
+  const map = new Map<string, AlertWithSupplier[]>();
+  for (const a of alerts) {
+    const arr = map.get(a.supplier.id) ?? [];
+    arr.push(a);
+    map.set(a.supplier.id, arr);
+  }
+  return map;
+}
+
+/**
+ * Rend un digest email FR pour les alertes critical d'une company.
+ *
+ * @param companyName  Nom de la société destinataire (pour personnalisation intro).
+ * @param alerts       Alertes pré-filtrées et pré-ordonnées par le caller.
+ *                     Doivent être TOUTES `severity === 'critical'` (sinon throw).
+ *
+ * Subject adaptatif selon (nbAlertes, nbFournisseurs). Body texte brut
+ * ~72 chars de large, signature "L'équipe Bomatech / contact@bomatech.fr".
+ *
+ * Limites V1 (à documenter ROADMAP) : texte brut uniquement, pas d'unsubscribe
+ * one-click RFC 8058, pas de tracking, digest identique pour owner et admin.
+ */
+export function supplierAlertDigestTemplate(
+  companyName: string,
+  alerts: AlertWithSupplier[],
+): RenderedSupplierDigest {
+  assertAllCritical(alerts);
+
+  const grouped = groupBySupplier(alerts);
+  const numAlerts = alerts.length;
+  const numSuppliers = grouped.size;
+
+  const blocks: string[] = [];
+  for (const group of grouped.values()) {
+    const supplier = group[0].supplier;
+    const lines: string[] = [];
+    lines.push(`▸ ${supplier.name} (SIREN ${supplier.siren})`);
+    for (const alert of group) {
+      const detectedAt = formatDateLong(alert.created_at.slice(0, 10));
+      lines.push(`   ${eventLabel(alert)} (détecté le ${detectedAt})`);
+      const detail = eventDetail(alert);
+      if (detail) lines.push(`   ${detail}`);
+    }
+    blocks.push(lines.join("\n"));
+  }
+
+  const intro = buildIntroAdaptative(numAlerts, numSuppliers);
+
+  const body = [
+    "Bonjour,",
+    "",
+    `Bomatech a détecté ${intro} pour la société ${companyName}.`,
+    "",
+    blocks.join("\n\n"),
+    "",
+    "Que faire :",
+    "  - Consulter le détail dans Bomatech :",
+    `    ${BOMATECH_APP_URL}/suppliers`,
+    "  - Vérifier la publication officielle sur le BODACC :",
+    `    ${BODACC_URL}`,
+    "  - Le cas échéant, prendre contact avec le fournisseur pour",
+    "    confirmer la situation avant toute décision commerciale.",
+    "",
+    "Note : ces alertes proviennent des bases Pappers et BODACC. Elles",
+    "n'ont pas de valeur juridique probante et peuvent présenter jusqu'à",
+    "24 heures de retard. Pour les démarches officielles, vérifiez",
+    "directement sur le BODACC.",
+    "",
+    "—",
+    "Bomatech traite vos données fournisseurs (raison sociale, SIREN,",
+    "dirigeants publics) sur la base de votre intérêt légitime à",
+    "surveiller la santé juridique de vos relations commerciales.",
+    "Sources : registres publics RCS via Pappers, annonces officielles",
+    "via BODACC. Aucun profilage. Pour exercer vos droits (accès,",
+    "rectification, opposition), écrivez à contact@bomatech.fr.",
+    "",
+    "Cordialement,",
+    "",
+    "—",
+    "L'équipe Bomatech",
+    "contact@bomatech.fr",
+  ].join("\n");
+
+  return { subject: buildSubject(alerts), body };
 }
