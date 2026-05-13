@@ -109,8 +109,11 @@ async function fetchWithRetry(url: string, retries = 1): Promise<Response> {
 export interface PappersClient {
   /** GET /entreprise?siren=...  — 1 crédit, cached intra-run par SIREN. */
   getBySiren: (siren: string) => Promise<PappersEntrepriseRaw>;
-  /** GET /recherche?q=...  — 1 crédit. */
-  searchByName: (query: string) => Promise<PappersRechercheResponseRaw>;
+  /** GET /recherche?q=...&par_page=opts.limit  — 1 crédit. */
+  searchByName: (
+    query: string,
+    opts?: { limit?: number },
+  ) => Promise<PappersRechercheResponseRaw>;
   /** GET /suivi-jetons  — supposé 0 crédit, best effort. */
   getJetonsRemaining: () => Promise<PappersJetonsResponseRaw>;
 }
@@ -141,11 +144,16 @@ export function createPappersClient(): PappersClient {
       return raw;
     },
 
-    async searchByName(query: string): Promise<PappersRechercheResponseRaw> {
-      const url =
-        `${PAPPERS_BASE_URL}/recherche` +
-        `?q=${encodeURIComponent(query)}` +
-        `&api_token=${encodeURIComponent(getApiKey())}`;
+    async searchByName(
+      query: string,
+      opts?: { limit?: number },
+    ): Promise<PappersRechercheResponseRaw> {
+      const params = new URLSearchParams({
+        q: query,
+        api_token: getApiKey(),
+      });
+      if (opts?.limit) params.set("par_page", String(opts.limit));
+      const url = `${PAPPERS_BASE_URL}/recherche?${params.toString()}`;
       const res = await fetchWithRetry(url);
       const raw = (await res.json()) as PappersRechercheResponseRaw;
       await incrementPappersUsage(1).catch(() => {});

@@ -48,6 +48,26 @@ export async function getSupplier(
   return data as Supplier | null;
 }
 
+/**
+ * Retrouve un supplier par (company_id, siren). Utilisé en P5b après
+ * une erreur de duplicate sur createSupplier pour récupérer l'id de
+ * l'enregistrement existant et rediriger l'utilisateur dessus.
+ */
+export async function getSupplierBySiren(
+  companyId: string,
+  siren: string,
+  c?: SupabaseClient,
+): Promise<Supplier | null> {
+  const { data, error } = await client(c)
+    .from("suppliers")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("siren", siren)
+    .maybeSingle();
+  if (error) throw new Error(`getSupplierBySiren failed: ${error.message}`);
+  return data as Supplier | null;
+}
+
 export interface CreateSupplierInput {
   company_id: string;
   name: string;
