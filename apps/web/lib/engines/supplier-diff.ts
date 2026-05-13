@@ -65,7 +65,11 @@ export function computeSupplierDiff(
     alerts.push({
       severity: severityOf("procedure_collective_opened"),
       event_type: "procedure_collective_opened",
-      payload: { kind: newSnapshot.procedure_collective.kind },
+      payload: {
+        kind: newSnapshot.procedure_collective.kind,
+        judgment_date: newSnapshot.procedure_collective.judgment_date,
+        tribunal: newSnapshot.procedure_collective.tribunal,
+      },
     });
   }
 
@@ -79,7 +83,7 @@ export function computeSupplierDiff(
       event_type: "procedure_collective_judgment",
       payload: {
         kind: newSnapshot.procedure_collective.last_judgment_kind,
-        date: newSnapshot.procedure_collective.last_judgment_date,
+        judgment_date: newSnapshot.procedure_collective.last_judgment_date,
       },
     });
   }
@@ -91,7 +95,11 @@ export function computeSupplierDiff(
     alerts.push({
       severity: severityOf("cessation"),
       event_type: "cessation",
-      payload: { before: oldSnapshot.status, after: "cessation" },
+      payload: {
+        before: oldSnapshot.status,
+        after: "cessation",
+        effective_date: newSnapshot.date_cessation,
+      },
     });
   }
 
@@ -102,7 +110,11 @@ export function computeSupplierDiff(
     alerts.push({
       severity: severityOf("radiation"),
       event_type: "radiation",
-      payload: { before: oldSnapshot.status, after: "radiation" },
+      payload: {
+        before: oldSnapshot.status,
+        after: "radiation",
+        radiation_date: newSnapshot.date_radiation,
+      },
     });
   }
 

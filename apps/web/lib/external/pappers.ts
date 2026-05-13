@@ -212,14 +212,27 @@ function mapStatus(raw: PappersEntrepriseRaw): SupplierStatus {
 
 function pickActiveProcedureCollective(
   procedures: PappersProcedureCollectiveRaw[] = [],
-): { open: boolean; kind: ProcedureCollectiveKind | null } {
+): {
+  open: boolean;
+  kind: ProcedureCollectiveKind | null;
+  judgment_date: string | null;
+  tribunal: string | null;
+} {
   // V1 : on prend la procédure non-clôturée la plus récente par date_jugement.
   const open = procedures.filter((p) => !p.date_cloture);
-  if (open.length === 0) return { open: false, kind: null };
+  if (open.length === 0) {
+    return { open: false, kind: null, judgment_date: null, tribunal: null };
+  }
   const sorted = [...open].sort((a, b) =>
     (b.date_jugement ?? "").localeCompare(a.date_jugement ?? ""),
   );
-  return { open: true, kind: mapProcedureType(sorted[0].type) };
+  const top = sorted[0];
+  return {
+    open: true,
+    kind: mapProcedureType(top.type),
+    judgment_date: top.date_jugement ?? null,
+    tribunal: top.tribunal ?? null,
+  };
 }
 
 /**
@@ -252,6 +265,8 @@ export function mapPappersToSnapshot(
     procedure_collective: {
       open: proc.open,
       kind: proc.kind,
+      judgment_date: proc.judgment_date,
+      tribunal: proc.tribunal,
       last_judgment_kind: null,
       last_judgment_date: null,
     },
@@ -260,6 +275,10 @@ export function mapPappersToSnapshot(
       typeof raw.capital === "number" ? Math.round(raw.capital * 100) : null,
     address_siege: mapAddressSiege(raw),
     last_comptes_published_year: lastYear,
+    date_cessation: raw.date_cessation ?? null,
+    // V1 best effort : Pappers v2 ne documente pas date_radiation directement,
+    // certaines réponses exposent date_fin_activite. Null si aucun des deux.
+    date_radiation: raw.date_radiation ?? raw.date_fin_activite ?? null,
   };
 }
 

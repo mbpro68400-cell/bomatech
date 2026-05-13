@@ -69,6 +69,10 @@ export interface PappersEntrepriseRaw {
   date_cessation?: string | null;
   capital?: number | null; // en euros (à confirmer en P6)
   devise_capital?: string | null;
+  /** Date de radiation du RCS (champ direct si Pappers v2 le fournit). */
+  date_radiation?: string | null;
+  /** Alternative à date_radiation observée dans certaines réponses Pappers. */
+  date_fin_activite?: string | null;
   siege?: PappersAddress;
   representants?: PappersDirigeantRaw[];
   dirigeants?: PappersDirigeantRaw[];

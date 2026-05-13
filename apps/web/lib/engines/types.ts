@@ -219,13 +219,23 @@ export interface PappersSnapshot {
   procedure_collective: {
     open: boolean;
     kind: ProcedureCollectiveKind | null;
+    /** Date du jugement de la procédure active courante (pour l'event _opened). */
+    judgment_date: string | null;
+    /** Tribunal de la procédure active courante (pour l'event _opened). */
+    tribunal: string | null;
+    /** Kind du dernier jugement (plan/conversion/clôture) — pour l'event _judgment. */
     last_judgment_kind: ProcedureCollectiveJudgmentKind | null;
+    /** Date du dernier jugement — pour l'event _judgment. */
     last_judgment_date: string | null;
   };
   dirigeants: Dirigeant[];
   capital_cents: number | null;
   address_siege: string | null;
   last_comptes_published_year: number | null;
+  /** Date de cessation d'activité (pour l'event cessation). Null si non applicable. */
+  date_cessation: string | null;
+  /** Date de radiation du RCS (pour l'event radiation). Null si non extractible. */
+  date_radiation: string | null;
 }
 
 /**

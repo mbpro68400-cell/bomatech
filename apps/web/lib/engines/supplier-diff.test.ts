@@ -13,6 +13,8 @@ function mkSnapshot(overrides: Partial<PappersSnapshot> = {}): PappersSnapshot {
     procedure_collective: {
       open: false,
       kind: null,
+      judgment_date: null,
+      tribunal: null,
       last_judgment_kind: null,
       last_judgment_date: null,
     },
@@ -22,6 +24,8 @@ function mkSnapshot(overrides: Partial<PappersSnapshot> = {}): PappersSnapshot {
     capital_cents: 1_000_000,
     address_siege: "12 rue de la Paix, 75001 Paris",
     last_comptes_published_year: 2024,
+    date_cessation: null,
+    date_radiation: null,
     ...overrides,
   };
 }
@@ -43,6 +47,8 @@ describe("computeSupplierDiff", () => {
       procedure_collective: {
         open: true,
         kind: "redressement",
+        judgment_date: "2026-05-10",
+        tribunal: "Tribunal de commerce de Paris",
         last_judgment_kind: null,
         last_judgment_date: null,
       },
@@ -52,7 +58,11 @@ describe("computeSupplierDiff", () => {
     expect(alerts[0]).toMatchObject({
       severity: "critical",
       event_type: "procedure_collective_opened",
-      payload: { kind: "redressement" },
+      payload: {
+        kind: "redressement",
+        judgment_date: "2026-05-10",
+        tribunal: "Tribunal de commerce de Paris",
+      },
     });
   });
 
@@ -61,6 +71,8 @@ describe("computeSupplierDiff", () => {
       procedure_collective: {
         open: true,
         kind: "redressement",
+        judgment_date: "2026-03-01",
+        tribunal: "Tribunal de commerce de Paris",
         last_judgment_kind: null,
         last_judgment_date: null,
       },
@@ -69,6 +81,8 @@ describe("computeSupplierDiff", () => {
       procedure_collective: {
         open: true,
         kind: "redressement",
+        judgment_date: "2026-03-01",
+        tribunal: "Tribunal de commerce de Paris",
         last_judgment_kind: "conversion",
         last_judgment_date: "2026-05-10",
       },
@@ -78,29 +92,43 @@ describe("computeSupplierDiff", () => {
     expect(alerts[0]).toMatchObject({
       severity: "critical",
       event_type: "procedure_collective_judgment",
-      payload: { kind: "conversion", date: "2026-05-10" },
+      payload: { kind: "conversion", judgment_date: "2026-05-10" },
     });
   });
 
-  it("5. cessation : 1 critical", () => {
-    const next = mkSnapshot({ status: "cessation" });
+  it("5. cessation : 1 critical (avec effective_date)", () => {
+    const next = mkSnapshot({
+      status: "cessation",
+      date_cessation: "2026-05-01",
+    });
     const alerts = computeSupplierDiff(mkSnapshot(), next);
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({
       severity: "critical",
       event_type: "cessation",
-      payload: { before: "active", after: "cessation" },
+      payload: {
+        before: "active",
+        after: "cessation",
+        effective_date: "2026-05-01",
+      },
     });
   });
 
-  it("6. radiation : 1 critical", () => {
-    const next = mkSnapshot({ status: "radiation" });
+  it("6. radiation : 1 critical (avec radiation_date)", () => {
+    const next = mkSnapshot({
+      status: "radiation",
+      date_radiation: "2026-05-05",
+    });
     const alerts = computeSupplierDiff(mkSnapshot(), next);
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({
       severity: "critical",
       event_type: "radiation",
-      payload: { before: "active", after: "radiation" },
+      payload: {
+        before: "active",
+        after: "radiation",
+        radiation_date: "2026-05-05",
+      },
     });
   });
 
@@ -197,6 +225,8 @@ describe("computeSupplierDiff", () => {
       procedure_collective: {
         open: true,
         kind: "sauvegarde",
+        judgment_date: null,
+        tribunal: null,
         last_judgment_kind: null,
         last_judgment_date: null,
       },
